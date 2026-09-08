@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1420">
+  <meta name="description" content="Shwapno receiving intelligence dashboard for monitoring over receiving, under receiving, stock, sales and PO-level exceptions.">
+  <title>Receiving Dashboard-Shwapno</title>
+  <link rel="preconnect" href="https://app.powerbi.com" crossorigin>
+  <link rel="stylesheet" href="./styles.css?v=20260908-1">
+</head>
+<body>
+  <header id="app-header" class="app-header">
+    <a class="brand" href="https://aftabz-lab.github.io/" aria-label="Return to Shwapno Dashboard Portal">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <span class="brand-copy">
+        <strong>SHWAPNO</strong>
+        <small>OPERATIONS INTELLIGENCE</small>
+      </span>
+    </a>
+
+    <div class="report-title">
+      <span class="eyebrow">SUPPLY CHAIN CONTROL</span>
+      <h1>Receiving Dashboard-Shwapno</h1>
+    </div>
+
+    <div class="report-actions">
+      <div class="live-status" role="status" aria-live="polite">
+        <span id="status-dot" class="status-dot loading" aria-hidden="true"></span>
+        <span>
+          <strong id="connection-status">Loading Power BI</strong>
+          <small id="refresh-status">Auto refresh every 15 minutes</small>
+        </span>
+      </div>
+      <button id="refresh-report" class="action-button primary" type="button" title="Reload the latest Power BI report">
+        <span class="button-icon" aria-hidden="true">↻</span>
+        <span>Refresh</span>
+      </button>
+      <button id="fullscreen-report" class="action-button" type="button" title="Open the dashboard in full screen">
+        <span class="button-icon" aria-hidden="true">⛶</span>
+        <span id="fullscreen-label">Full screen</span>
+      </button>
+      <a id="open-powerbi" class="action-button" href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D" target="_blank" rel="noopener noreferrer" title="Open the original report in Power BI">
+        <span class="button-icon" aria-hidden="true">↗</span>
+        <span>Power BI</span>
+      </a>
+    </div>
+  </header>
+
+  <main id="report-shell" class="report-shell" aria-label="Receiving Dashboard workspace">
+    <div id="loading-layer" class="loading-layer" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <div>
+        <strong id="loading-title">Opening Receiving Dashboard</strong>
+        <small id="loading-message">Connecting to the latest published Power BI report…</small>
+      </div>
+      <button id="retry-report" class="retry-button" type="button" hidden>Try again</button>
+    </div>
+
+    <iframe
+      id="report-frame"
+      title="Receiving Dashboard-Shwapno Power BI report"
+      src="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D"
+      data-report-url="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D"
+      allow="fullscreen"
+      allowfullscreen
+      referrerpolicy="strict-origin-when-cross-origin"
+    ></iframe>
+
+    <noscript>
+      <div class="noscript-message">JavaScript is required for automatic refresh. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report directly.</a></div>
+    </noscript>
+  </main>
+
+  <script src="./app.js?v=20260908-1"></script>
+</body>
+</html>
