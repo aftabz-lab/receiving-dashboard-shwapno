@@ -64,7 +64,7 @@
     <section id="filters-panel" class="filter-panel is-open" aria-label="Cascading dashboard filters">
       <div class="filter-grid">
         <label class="filter-field"><span>Period</span><select id="period-filter"><option value="7">Latest 7 days</option><option value="30" selected>Latest 30 days</option><option value="60">Latest 60 days</option><option value="90">Latest 90 days</option></select></label>
-        <label class="filter-field"><span>Business division</span><select id="master-category-filter"><option value="all">Select all</option><option value="COMPANY GOODS">COMPANY GOODS</option><option value="FRESH PRODUCE">FRESH PRODUCE</option><option value="GENERAL MERCHANDISE">GENERAL MERCHANDISE</option><option value="LIFESTYLE">LIFESTYLE</option><option value="LOOSE COMMODITY">LOOSE COMMODITY</option><option value="PACKED COMMODITY" selected>PACKED COMMODITY</option></select></label>
+        <label class="filter-field"><span>Business division</span><select id="master-category-filter"><option value="all" selected>Select all</option><option value="COMPANY GOODS">COMPANY GOODS</option><option value="FRESH PRODUCE">FRESH PRODUCE</option><option value="GENERAL MERCHANDISE">GENERAL MERCHANDISE</option><option value="LIFESTYLE">LIFESTYLE</option><option value="LOOSE COMMODITY">LOOSE COMMODITY</option><option value="PACKED COMMODITY">PACKED COMMODITY</option></select></label>
         <label class="filter-field"><span>Category name</span><select id="category-filter"><option value="all">All categories</option></select></label>
         <label class="filter-field"><span>Division / Region</span><select id="region-filter"><option value="all">All divisions</option></select></label>
         <label class="filter-field search-combo"><span>RHO name</span><input id="rho-filter" type="search" list="rho-options" autocomplete="off" placeholder="All RHO · type to search"><datalist id="rho-options"></datalist></label>
@@ -91,7 +91,7 @@
 
     <section id="overview-view" class="dashboard-view" role="tabpanel" aria-labelledby="overview-tab">
       <section class="executive-pulse" aria-labelledby="pulse-title">
-        <div class="pulse-heading"><span class="section-kicker">EXECUTIVE PULSE</span><h2 id="pulse-title">Receiving position at a glance</h2><p id="report-context">Packed Commodity · Latest 30 complete days</p></div>
+        <div class="pulse-heading"><span class="section-kicker">EXECUTIVE PULSE</span><h2 id="pulse-title">Receiving position at a glance</h2><p id="report-context">All business divisions · Latest 30 complete days</p></div>
         <div class="pulse-statement"><span id="balance-label" class="signal-badge neutral">Receipt balance</span><strong id="balance-headline">Loading current position…</strong><p id="balance-detail">Comparing received units with invoiced sales for the selected scope.</p></div>
         <div class="pulse-meta"><span>Data window</span><strong id="data-window">—</strong><small id="query-time">Live query pending</small></div>
       </section>
@@ -118,7 +118,7 @@
         <article class="panel category-panel"><header class="panel-header"><div><span class="section-kicker">CATEGORY MIX</span><h2>Receipt balance by category</h2><p>Received minus sold units. Right builds inventory; left draws it down.</p></div></header><div id="category-chart" class="chart-frame chart-skeleton" aria-live="polite"></div></article>
 
         <article class="panel region-panel">
-          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Click any number for article-level details. Select any header to sort ascending or descending.</p></div><div class="table-head-meta"><span id="region-sort-status" class="sort-status">Sorted by over value ↓</span><button class="csv-button" type="button" data-export-table="region" disabled>Visible CSV</button></div></header>
+          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Click any value for article-level details. Select a header to sort; Shift-click another header for multi-sort.</p></div><div class="table-head-meta"><span id="region-sort-status" class="sort-status">Sorted by over value ↓</span><button class="csv-button" type="button" data-export-table="region" disabled>Visible CSV</button></div></header>
           <div class="table-scroll">
             <table class="executive-table sortable-table">
               <thead><tr>

@@ -1291,6 +1291,7 @@ a { color: inherit; }
 .compact-action { padding-inline: 11px; }
 
 .drill-link,
+.text-link,
 .support-link,
 .number-link {
   border: 0;
@@ -1308,6 +1309,40 @@ a { color: inherit; }
   text-decoration: underline;
   text-decoration-color: transparent;
   text-underline-offset: 5px;
+}
+
+.text-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: inherit;
+  padding: 0;
+  text-align: inherit;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+
+.text-link:hover,
+.text-link:focus-visible {
+  color: var(--petrol);
+  text-decoration-color: currentColor;
+}
+
+.text-link.position-pill { display: inline-flex; padding: 4px 8px; }
+
+.chart-link { cursor: pointer; }
+.chart-link text { text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
+.chart-link:hover text,
+.chart-link:focus text { text-decoration-color: currentColor; }
+
+.sort-button.is-sorted[data-sort-rank]:not([data-sort-rank="1"]) span::before {
+  content: attr(data-sort-rank);
+  margin-right: 2px;
+  font-size: 9px;
 }
 
 .drill-link:hover,

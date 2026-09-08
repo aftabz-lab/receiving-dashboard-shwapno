@@ -4,11 +4,11 @@ import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
 const DASHBOARD_CACHE_MS = 24 * 60 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v6";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v7";
 const DETAIL_ROW_LIMIT = 400;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
-  masterCategory: "PACKED COMMODITY",
+  masterCategory: "all",
   category: "all",
   region: "all",
   rho: "all",
@@ -610,7 +610,8 @@ function renderCategoryChart(rows) {
     const positive = row.Gap >= 0;
     const x = positive ? centre : centre - barWidth;
     const title = `${row.Category}: received ${exact(row.Receiving)}, sold ${exact(row.Sales)}, balance ${signedCompact(row.Gap)}`;
-    return `<text x="8" y="${y + 5}" fill="var(--ink)" font-size="12.5" font-weight="750">${escapeHtml(row.Category)}</text><rect x="${x}" y="${y - 10}" width="${Math.max(1.5, barWidth)}" height="20" rx="4" fill="${positive ? "var(--coral)" : "var(--petrol)"}"><title>${escapeHtml(title)}</title></rect><text x="${width - 8}" y="${y + 5}" text-anchor="end" fill="${positive ? "var(--coral)" : "var(--petrol)"}" font-size="12.5" font-weight="800">${escapeHtml(signedCompact(row.Gap))}</text>`;
+    const drillAttributes = `class="chart-link" role="button" tabindex="0" data-drill-metric="Gap" data-context-type="category" data-context-value="${escapeHtml(row.Category)}" data-context-label="${escapeHtml(row.Category)}"`;
+    return `<g ${drillAttributes} aria-label="Open ${escapeHtml(row.Category)} details"><text x="8" y="${y + 5}" fill="var(--ink)" font-size="12.5" font-weight="750">${escapeHtml(row.Category)}</text><rect x="${x}" y="${y - 10}" width="${Math.max(1.5, barWidth)}" height="20" rx="4" fill="${positive ? "var(--coral)" : "var(--petrol)"}"><title>${escapeHtml(title)}</title></rect><text x="${width - 8}" y="${y + 5}" text-anchor="end" fill="${positive ? "var(--coral)" : "var(--petrol)"}" font-size="12.5" font-weight="800">${escapeHtml(signedCompact(row.Gap))}</text></g>`;
   }).join("");
   dom.categoryChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Diverging bar chart of received units minus sold units by category"><text x="${chartStart}" y="17" fill="var(--muted)" font-size="11.5" font-weight="700">Sales-led</text><text x="${chartEnd}" y="17" text-anchor="end" fill="var(--muted)" font-size="11.5" font-weight="700">Receipt-heavy</text><line class="chart-zero" x1="${centre}" y1="27" x2="${centre}" y2="${height - 12}"/>${bars}</svg>`;
 }
@@ -707,30 +708,41 @@ function setExportAvailability(table, hasRows) {
 }
 
 function sortRows(rows, table) {
-  const { key, direction } = state.sorts[table];
-  const multiplier = direction === "asc" ? 1 : -1;
+  const sort = state.sorts[table];
+  const criteria = [{ key: sort.key, direction: sort.direction }, ...(sort.secondary || [])];
   return [...rows].sort((left, right) => {
-    const a = left[key];
-    const b = right[key];
-    const an = finite(a);
-    const bn = finite(b);
-    let result;
-    if (an != null && bn != null) result = an - bn;
-    else result = String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
-    return result * multiplier;
+    for (const { key, direction } of criteria) {
+      const a = left[key];
+      const b = right[key];
+      const an = finite(a);
+      const bn = finite(b);
+      const result = an != null && bn != null
+        ? an - bn
+        : String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+      if (result) return result * (direction === "asc" ? 1 : -1);
+    }
+    return 0;
   });
 }
 
 function updateSortIndicators(table) {
   const sort = state.sorts[table];
+  const criteria = [{ key: sort.key, direction: sort.direction }, ...(sort.secondary || [])];
   document.querySelectorAll(`[data-sort-table="${table}"]`).forEach(button => {
-    const active = button.dataset.sortKey === sort.key;
+    const rank = criteria.findIndex(item => item.key === button.dataset.sortKey);
+    const active = rank >= 0;
+    const criterion = criteria[rank];
     button.classList.toggle("is-sorted", active);
-    button.classList.toggle("is-ascending", active && sort.direction === "asc");
-    button.setAttribute("aria-sort", active ? (sort.direction === "asc" ? "ascending" : "descending") : "none");
+    button.classList.toggle("is-ascending", active && criterion.direction === "asc");
+    button.dataset.sortRank = active ? String(rank + 1) : "";
+    button.setAttribute("aria-sort", active ? (criterion.direction === "asc" ? "ascending" : "descending") : "none");
   });
   const status = el(`${table}-sort-status`);
-  if (status) status.textContent = `Sorted by ${sortLabels[sort.key] || sort.key} ${sort.direction === "asc" ? "↑" : "↓"}`;
+  if (status) status.textContent = `Sorted by ${criteria.map(item => `${sortLabels[item.key] || item.key} ${item.direction === "asc" ? "↑" : "↓"}`).join(", then ")}`;
+}
+
+function drillText(display, metric, contextType, contextValue, contextLabel, extraClass = "") {
+  return `<button class="text-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open details for ${escapeHtml(contextLabel)}">${escapeHtml(display)}</button>`;
 }
 
 function drillNumber(display, rawValue, metric, contextType, contextValue, contextLabel, extraClass = "") {
@@ -760,13 +772,13 @@ function renderRegions(rows) {
     const label = plainRegion(row);
     const contextValue = row.Region == null ? "__UNASSIGNED__" : row.Region;
     const position = positionForGap(row.Gap);
-    return `<tr><td>${escapeHtml(label)}</td>
+    return `<tr><td>${drillText(label, "Gap", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(compact(row.Receiving), row.Receiving, "Receiving", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(compact(row.Sales), row.Sales, "Sales", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(signedCompact(row.Gap), row.Gap, "Gap", "region", contextValue, label, row.Gap > 0 ? "is-positive" : row.Gap < 0 ? "is-negative" : "")}</td>
       <td class="numeric">${drillNumber(bdt(row.OverValue), row.OverValue, "OverValue", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(exact(row.Incidents), row.Incidents, "Incidents", "region", contextValue, label)}</td>
-      <td><span class="position-pill ${position.className}">${position.label}</span></td></tr>`;
+      <td>${drillText(position.label, "Gap", "region", contextValue, label, `position-pill ${position.className}`)}</td></tr>`;
   }).join("");
 }
 
@@ -910,6 +922,9 @@ function detailFiltersForContext(context) {
     } else {
       filters.region = context.value;
     }
+  } else if (context.type === "category") {
+    filters.category = context.value;
+    filters.articleNo = "all";
   }
   return filters;
 }
@@ -1017,11 +1032,20 @@ function detailNumber(row, metric, display) {
   return `<button class="number-link" type="button" data-detail-article="${escapeHtml(row.ArticleNo)}" title="Show this article record">${escapeHtml(display)}</button>`;
 }
 
-function applySort(table, key) {
+function applySort(table, key, additive = false) {
   const current = state.sorts[table];
-  state.sorts[table] = current.key === key
-    ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
-    : { key, direction: ["Region", "Outlet", "RHO", "Zonal", "ArticleNo", "ArticleName", "MasterCategory", "Category", "Position"].includes(key) ? "asc" : "desc" };
+  const defaultDirection = ["Region", "Outlet", "RHO", "Zonal", "ArticleNo", "ArticleName", "MasterCategory", "Category", "Position"].includes(key) ? "asc" : "desc";
+  if (!additive) {
+    state.sorts[table] = current.key === key
+      ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+      : { key, direction: defaultDirection };
+  } else {
+    const criteria = [{ key: current.key, direction: current.direction }, ...(current.secondary || [])];
+    const existing = criteria.find(item => item.key === key);
+    if (existing) existing.direction = existing.direction === "asc" ? "desc" : "asc";
+    else criteria.push({ key, direction: defaultDirection });
+    state.sorts[table] = { ...criteria[0], secondary: criteria.slice(1) };
+  }
   if (table === "region") renderRegions(state.data?.regions || []);
   if (table === "outlet") renderOutlets();
   if (table === "detail") renderDetail();
@@ -1030,13 +1054,13 @@ function applySort(table, key) {
 function renderDetailHeader() {
   dom.detailHead.innerHTML = state.detailColumns.map(column => `<th scope="col"${column.numeric ? ' class="numeric"' : ""}><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)} <span></span></button></th>`).join("");
   dom.detailHead.querySelectorAll(".sort-button").forEach(button => {
-    button.addEventListener("click", () => applySort("detail", button.dataset.sortKey));
+    button.addEventListener("click", event => applySort("detail", button.dataset.sortKey, event.shiftKey));
   });
 }
 
 function detailDisplay(row, column) {
   const value = row[column.key];
-  if (!column.numeric) return escapeHtml(value || (column.key === "ArticleName" ? "Unnamed article" : "—"));
+  if (!column.numeric) return `<button class="text-link" type="button" data-detail-article="${escapeHtml(row.ArticleNo)}" title="Show this article record">${escapeHtml(value || (column.key === "ArticleName" ? "Unnamed article" : "—"))}</button>`;
   const display = column.key === "Gap" ? signedCompact(value)
     : column.key === "OverValue" ? bdt(value)
       : column.key === "StockDay" ? (finite(value) == null ? "—" : Number(value).toFixed(1))
@@ -1220,7 +1244,7 @@ document.querySelectorAll(".focus-button").forEach(button => {
 });
 
 document.querySelectorAll(".sort-button").forEach(button => {
-  button.addEventListener("click", () => applySort(button.dataset.sortTable, button.dataset.sortKey));
+  button.addEventListener("click", event => applySort(button.dataset.sortTable, button.dataset.sortKey, event.shiftKey));
 });
 
 document.querySelectorAll("[data-export-table]").forEach(button => {
@@ -1230,6 +1254,14 @@ document.querySelectorAll("[data-export-table]").forEach(button => {
 dom.main.addEventListener("click", event => {
   const drill = event.target.closest("[data-drill-metric]");
   if (!drill) return;
+  openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null);
+});
+
+dom.main.addEventListener("keydown", event => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const drill = event.target.closest("[data-drill-metric]");
+  if (!drill) return;
+  event.preventDefault();
   openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null);
 });
 
@@ -1307,7 +1339,7 @@ dom.regionFilter.addEventListener("change", event => {
 dom.resetButton.addEventListener("click", () => {
   state.filters = { ...DEFAULT_FILTERS };
   dom.periodFilter.value = "30";
-  dom.masterCategoryFilter.value = "PACKED COMMODITY";
+  dom.masterCategoryFilter.value = "all";
   dom.categoryFilter.value = "all";
   dom.regionFilter.value = "all";
   dom.rhoFilter.value = "";
