@@ -1,22 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#102b4e">
   <meta name="description" content="Receiving Dashboard-Shwapno — an executive view of live receiving, sales, inventory and outlet exceptions from Power BI.">
   <title>Receiving Dashboard-Shwapno</title>
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
+  </script>
   <link rel="preconnect" href="https://wabi-east-asia-b-primary-api.analysis.windows.net" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260908-2">
+  <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
+  <link rel="stylesheet" href="./styles.css?v=20260908-5">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to dashboard</a>
 
   <header class="topbar">
     <div class="brand-lockup">
-      <a class="brand-mark" href="https://aftabz-lab.github.io/" aria-label="Return to dashboard portal">
-        <span aria-hidden="true">S</span>
-      </a>
+      <a class="brand-mark" href="https://aftabz-lab.github.io/" aria-label="Return to dashboard portal"><span aria-hidden="true">S</span></a>
       <div class="brand-copy">
         <span class="product-label">SHWAPNO · SUPPLY CHAIN</span>
         <h1>Receiving Dashboard</h1>
@@ -26,56 +28,55 @@
     <div class="topbar-actions">
       <div class="source-status" role="status" aria-live="polite">
         <span id="status-dot" class="status-dot is-loading" aria-hidden="true"></span>
-        <span>
-          <strong id="connection-status">Connecting to live data</strong>
-          <small id="source-freshness">Reading the published Power BI model…</small>
-        </span>
+        <span><strong id="connection-status">Connecting to live data</strong><small id="source-freshness">Reading the published Power BI model…</small></span>
       </div>
-      <button id="refresh-dashboard" class="icon-button" type="button" title="Refresh dashboard data">
+      <button id="theme-toggle" class="icon-button secondary compact-action" type="button" title="Switch colour mode">
+        <svg class="theme-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/></svg>
+        <span id="theme-label">Dark mode</span>
+      </button>
+      <button id="refresh-dashboard" class="icon-button compact-action" type="button" title="Refresh dashboard data">
         <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M6.1 9A7 7 0 0 1 18 6.8L20 11M4 13l2 4.2A7 7 0 0 0 17.9 15"/></svg>
         <span>Refresh</span>
       </button>
-      <a id="open-powerbi" class="icon-button secondary" href="#" target="_blank" rel="noopener noreferrer">
+      <a id="open-powerbi" class="icon-button secondary compact-action" href="#" target="_blank" rel="noopener noreferrer">
         <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4"/></svg>
-        <span>Source report</span>
+        <span>Source</span>
       </a>
     </div>
   </header>
 
-  <div class="control-deck" aria-label="Dashboard controls">
-    <div class="view-tabs" role="tablist" aria-label="Dashboard views">
-      <button id="overview-tab" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="overview-view" data-view="overview">
-        Executive overview
-      </button>
-      <button id="exceptions-tab" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="exceptions-view" data-view="exceptions">
-        Outlet exceptions <span id="exception-count" class="tab-count">—</span>
-      </button>
+  <div class="command-center">
+    <div class="control-deck" aria-label="Dashboard controls">
+      <div class="view-tabs" role="tablist" aria-label="Dashboard views">
+        <button id="overview-tab" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="overview-view" data-view="overview">Executive overview</button>
+        <button id="exceptions-tab" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="exceptions-view" data-view="exceptions">Outlet exceptions <span id="exception-count" class="tab-count">—</span></button>
+      </div>
+      <div class="control-actions">
+        <span id="active-filter-summary" class="active-filter-summary">Default scope</span>
+        <button id="filter-toggle" class="filter-toggle is-active" type="button" aria-expanded="true" aria-controls="filters-panel">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+          Filters <span id="active-filter-count">2</span>
+        </button>
+        <button id="reset-filters" class="reset-button" type="button">Reset all</button>
+      </div>
     </div>
 
-    <div class="filters">
-      <label class="filter-field">
-        <span>Period</span>
-        <select id="period-filter">
-          <option value="7">Latest 7 days</option>
-          <option value="30" selected>Latest 30 days</option>
-          <option value="60">Latest 60 days</option>
-          <option value="90">Latest 90 days</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <span>Division</span>
-        <select id="region-filter">
-          <option value="all">All divisions</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <span>Category</span>
-        <select id="category-filter">
-          <option value="all">All categories</option>
-        </select>
-      </label>
-      <button id="reset-filters" class="reset-button" type="button">Reset filters</button>
-    </div>
+    <section id="filters-panel" class="filter-panel is-open" aria-label="Cascading dashboard filters">
+      <div class="filter-grid">
+        <label class="filter-field"><span>Period</span><select id="period-filter"><option value="7">Latest 7 days</option><option value="30" selected>Latest 30 days</option><option value="60">Latest 60 days</option><option value="90">Latest 90 days</option></select></label>
+        <label class="filter-field"><span>Business division</span><select id="master-category-filter"><option value="all">Select all</option><option value="COMPANY GOODS">COMPANY GOODS</option><option value="FRESH PRODUCE">FRESH PRODUCE</option><option value="GENERAL MERCHANDISE">GENERAL MERCHANDISE</option><option value="LIFESTYLE">LIFESTYLE</option><option value="LOOSE COMMODITY">LOOSE COMMODITY</option><option value="PACKED COMMODITY" selected>PACKED COMMODITY</option></select></label>
+        <label class="filter-field"><span>Category name</span><select id="category-filter"><option value="all">All categories</option></select></label>
+        <label class="filter-field"><span>Division / Region</span><select id="region-filter"><option value="all">All divisions</option></select></label>
+        <label class="filter-field search-combo"><span>RHO name</span><input id="rho-filter" type="search" list="rho-options" autocomplete="off" placeholder="All RHO · type to search"><datalist id="rho-options"></datalist></label>
+        <label class="filter-field search-combo"><span>Zonal name</span><input id="zonal-filter" type="search" list="zonal-options" autocomplete="off" placeholder="All Zonal · type to search"><datalist id="zonal-options"></datalist></label>
+        <label class="filter-field search-combo"><span>Outlet code or name</span><input id="outlet-filter" type="search" list="outlet-options" autocomplete="off" placeholder="All outlets · type to search"><datalist id="outlet-options"></datalist></label>
+        <label class="filter-field search-combo"><span>Article code or name</span><input id="article-filter" type="search" list="article-options" autocomplete="off" placeholder="All articles · type to search"><datalist id="article-options"></datalist></label>
+      </div>
+      <div class="filter-foot">
+        <span id="cascade-note">Each selection shortens the related RHO, Zonal, outlet, category and article options.</span>
+        <span id="organization-status">Loading Zonal/RHO mapping…</span>
+      </div>
+    </section>
   </div>
 
   <div id="loading-bar" class="loading-bar" aria-hidden="true"><span></span></div>
@@ -83,97 +84,52 @@
   <main id="main-content" class="dashboard" tabindex="-1" aria-busy="true">
     <section id="error-panel" class="error-panel" role="alert" hidden>
       <div class="error-icon" aria-hidden="true">!</div>
-      <div>
-        <strong>Live dashboard data could not be loaded</strong>
-        <p id="error-message">Check the connection and try again. The source report remains available.</p>
-      </div>
+      <div><strong>Live dashboard data could not be loaded</strong><p id="error-message">Check the connection and try again. The source report remains available.</p></div>
       <button id="retry-dashboard" type="button">Try again</button>
       <a id="error-powerbi-link" href="#" target="_blank" rel="noopener noreferrer">Open Power BI</a>
     </section>
 
     <section id="overview-view" class="dashboard-view" role="tabpanel" aria-labelledby="overview-tab">
       <section class="executive-pulse" aria-labelledby="pulse-title">
-        <div class="pulse-heading">
-          <span class="section-kicker">EXECUTIVE PULSE</span>
-          <h2 id="pulse-title">Receiving position at a glance</h2>
-          <p id="report-context">Packed Commodity · Latest 30 complete days</p>
-        </div>
-        <div class="pulse-statement">
-          <span id="balance-label" class="signal-badge neutral">Receipt balance</span>
-          <strong id="balance-headline">Loading current position…</strong>
-          <p id="balance-detail">Comparing received units with invoiced sales for the selected scope.</p>
-        </div>
-        <div class="pulse-meta">
-          <span>Data window</span>
-          <strong id="data-window">—</strong>
-          <small id="query-time">Live query pending</small>
-        </div>
+        <div class="pulse-heading"><span class="section-kicker">EXECUTIVE PULSE</span><h2 id="pulse-title">Receiving position at a glance</h2><p id="report-context">Packed Commodity · Latest 30 complete days</p></div>
+        <div class="pulse-statement"><span id="balance-label" class="signal-badge neutral">Receipt balance</span><strong id="balance-headline">Loading current position…</strong><p id="balance-detail">Comparing received units with invoiced sales for the selected scope.</p></div>
+        <div class="pulse-meta"><span>Data window</span><strong id="data-window">—</strong><small id="query-time">Live query pending</small></div>
       </section>
 
       <section class="kpi-grid" aria-label="Headline receiving metrics">
-        <article class="kpi-card primary-kpi">
-          <div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Received units</h3></div>
-          <strong id="kpi-receiving" class="kpi-value">—</strong>
-          <p id="kpi-receiving-note">Selected period</p>
-        </article>
-        <article class="kpi-card">
-          <div class="kpi-title-row"><span class="kpi-icon sales" aria-hidden="true">↗</span><h3>Sold units</h3></div>
-          <strong id="kpi-sales" class="kpi-value">—</strong>
-          <p id="kpi-sales-note">Invoiced sales</p>
-        </article>
-        <article class="kpi-card">
-          <div class="kpi-title-row"><span class="kpi-icon balance" aria-hidden="true">±</span><h3>Receipt balance</h3></div>
-          <strong id="kpi-gap" class="kpi-value">—</strong>
-          <p id="kpi-gap-note">Received minus sold</p>
-        </article>
-        <article class="kpi-card">
-          <div class="kpi-title-row"><span class="kpi-icon inventory" aria-hidden="true">□</span><h3>Inventory</h3></div>
-          <strong id="kpi-inventory" class="kpi-value">—</strong>
-          <p id="kpi-inventory-note">Total inventory units</p>
-        </article>
-        <article class="kpi-card risk-kpi">
-          <div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div>
-          <strong id="kpi-over-value" class="kpi-value">—</strong>
-          <p id="kpi-over-value-note">Source-calculated exposure</p>
-        </article>
-        <article class="kpi-card">
-          <div class="kpi-title-row"><span class="kpi-icon outlets" aria-hidden="true">◎</span><h3>Active outlets</h3></div>
-          <strong id="kpi-outlets" class="kpi-value">—</strong>
-          <p id="kpi-outlets-note">Latest stock above zero</p>
-        </article>
+        <article class="kpi-card primary-kpi"><div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Received units</h3></div><button id="kpi-receiving" class="kpi-value drill-link" type="button" data-drill-metric="Receiving">—</button><p id="kpi-receiving-note">Selected period</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon sales" aria-hidden="true">↗</span><h3>Sold units</h3></div><button id="kpi-sales" class="kpi-value drill-link" type="button" data-drill-metric="Sales">—</button><p id="kpi-sales-note">Invoiced sales</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon balance" aria-hidden="true">±</span><h3>Receipt balance</h3></div><button id="kpi-gap" class="kpi-value drill-link" type="button" data-drill-metric="Gap">—</button><p id="kpi-gap-note">Received minus sold</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon inventory" aria-hidden="true">□</span><h3>Inventory</h3></div><button id="kpi-inventory" class="kpi-value drill-link" type="button" data-drill-metric="Inventory">—</button><p id="kpi-inventory-note">Total inventory units</p></article>
+        <article class="kpi-card risk-kpi"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div><button id="kpi-over-value" class="kpi-value drill-link" type="button" data-drill-metric="OverValue">—</button><p id="kpi-over-value-note">Source-calculated exposure</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon outlets" aria-hidden="true">◎</span><h3>Active outlets</h3></div><button id="kpi-outlets" class="kpi-value drill-link" type="button" data-drill-metric="ActiveOutlets">—</button><p id="kpi-outlets-note">Latest stock above zero</p></article>
       </section>
 
       <section class="support-strip" aria-label="Supporting operational metrics">
-        <div class="support-metric"><span>Stock cover</span><strong id="stock-days">—</strong><small>days</small></div>
-        <div class="support-metric"><span>Over-receiving rate</span><strong id="over-rate">—</strong><small id="over-incidents">— incidents</small></div>
-        <div class="support-metric"><span>Under-receiving rate</span><strong id="under-rate">—</strong><small id="under-incidents">— incidents</small></div>
-        <div class="support-metric"><span>Closing stock</span><strong id="latest-stock">—</strong><small>latest dated stock</small></div>
+        <div class="support-metric"><span>Stock cover</span><button id="stock-days" class="support-link" type="button" data-drill-metric="StockDay">—</button><small>days</small></div>
+        <div class="support-metric"><span>Over-receiving rate</span><button id="over-rate" class="support-link" type="button" data-drill-metric="OverIncidents">—</button><small id="over-incidents">— incidents</small></div>
+        <div class="support-metric"><span>Under-receiving rate</span><button id="under-rate" class="support-link" type="button" data-drill-metric="UnderIncidents">—</button><small id="under-incidents">— incidents</small></div>
+        <div class="support-metric"><span>Closing stock</span><button id="latest-stock" class="support-link" type="button" data-drill-metric="Inventory">—</button><small>latest dated stock</small></div>
       </section>
 
       <section class="content-grid">
-        <article class="panel trend-panel">
-          <header class="panel-header">
-            <div><span class="section-kicker">FLOW TREND</span><h2>Receiving versus sales</h2><p>Daily units; use the gap to spot inventory build or drawdown.</p></div>
-            <div class="legend" aria-label="Chart legend"><span><i class="legend-line receiving"></i>Receiving</span><span><i class="legend-line sales"></i>Sales</span></div>
-          </header>
-          <div id="trend-chart" class="chart-frame chart-skeleton" aria-live="polite"></div>
-        </article>
-
-        <article class="panel focus-panel">
-          <header class="panel-header"><div><span class="section-kicker">MANAGEMENT FOCUS</span><h2>What needs attention</h2><p>Signals derived from the selected live view.</p></div></header>
-          <ol id="management-signals" class="signal-list"><li class="signal-skeleton"></li><li class="signal-skeleton"></li><li class="signal-skeleton"></li></ol>
-        </article>
-
-        <article class="panel category-panel">
-          <header class="panel-header"><div><span class="section-kicker">CATEGORY MIX</span><h2>Receipt balance by category</h2><p>Received minus sold units. Right builds inventory; left draws it down.</p></div></header>
-          <div id="category-chart" class="chart-frame chart-skeleton" aria-live="polite"></div>
-        </article>
+        <article class="panel trend-panel"><header class="panel-header"><div><span class="section-kicker">FLOW TREND</span><h2>Receiving versus sales</h2><p>Daily units; use the gap to spot inventory build or drawdown.</p></div><div class="legend" aria-label="Chart legend"><span><i class="legend-line receiving"></i>Receiving</span><span><i class="legend-line sales"></i>Sales</span></div></header><div id="trend-chart" class="chart-frame chart-skeleton" aria-live="polite"></div></article>
+        <article class="panel focus-panel"><header class="panel-header"><div><span class="section-kicker">MANAGEMENT FOCUS</span><h2>What needs attention</h2><p>Signals derived from the selected live view.</p></div></header><ol id="management-signals" class="signal-list"><li class="signal-skeleton"></li><li class="signal-skeleton"></li><li class="signal-skeleton"></li></ol></article>
+        <article class="panel category-panel"><header class="panel-header"><div><span class="section-kicker">CATEGORY MIX</span><h2>Receipt balance by category</h2><p>Received minus sold units. Right builds inventory; left draws it down.</p></div></header><div id="category-chart" class="chart-frame chart-skeleton" aria-live="polite"></div></article>
 
         <article class="panel region-panel">
-          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Unit and incident totals reconcile; value is recalculated by Power BI for each division.</p></div></header>
+          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Click any number for article-level details. Select any header to sort ascending or descending.</p></div><span id="region-sort-status" class="sort-status">Sorted by over value ↓</span></header>
           <div class="table-scroll">
-            <table class="executive-table">
-              <thead><tr><th scope="col">Division</th><th scope="col" class="numeric">Received</th><th scope="col" class="numeric">Sold</th><th scope="col" class="numeric">Balance</th><th scope="col" class="numeric">Over value</th><th scope="col" class="numeric">Incidents</th><th scope="col">Position</th></tr></thead>
+            <table class="executive-table sortable-table">
+              <thead><tr>
+                <th scope="col"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Region">Division <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Receiving">Received <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Sales">Sold <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Gap">Balance <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="OverValue">Over value <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Incidents">Incidents <span></span></button></th>
+                <th scope="col"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Position">Position <span></span></button></th>
+              </tr></thead>
               <tbody id="region-table-body"><tr><td colspan="7" class="empty-cell">Loading division view…</td></tr></tbody>
             </table>
           </div>
@@ -185,33 +141,79 @@
       <div class="exceptions-head">
         <div><span class="section-kicker">OUTLET ACTION QUEUE</span><h2>Prioritise exceptions, not pages of detail</h2><p id="exceptions-description">Outlets ranked by over-receiving value for the selected scope.</p></div>
         <div class="exception-tools">
-          <div class="segmented-control" role="group" aria-label="Exception ranking">
-            <button class="focus-button is-active" type="button" data-focus="over">Over receiving</button>
-            <button class="focus-button" type="button" data-focus="under">Under receiving</button>
-            <button class="focus-button" type="button" data-focus="stock">Stock cover</button>
-          </div>
-          <label class="search-field"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span class="sr-only">Search outlets</span><input id="outlet-search" type="search" placeholder="Search outlet, code or division"></label>
+          <div class="segmented-control" role="group" aria-label="Exception ranking"><button class="focus-button is-active" type="button" data-focus="over">Over receiving</button><button class="focus-button" type="button" data-focus="under">Under receiving</button><button class="focus-button" type="button" data-focus="stock">Stock cover</button></div>
+          <label class="search-field"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span class="sr-only">Search outlet table</span><input id="outlet-search" type="search" placeholder="Search code, outlet, RHO or Zonal"></label>
         </div>
       </div>
-
       <section id="exception-summary" class="exception-summary" aria-label="Top outlet exceptions"></section>
 
       <article class="panel outlet-panel">
-        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Showing the first 25 ranked outlets.</p></div><span id="outlet-result-count" class="result-count">—</span></header>
+        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Click any number for article-level details; select any header to sort.</p></div><div class="table-head-meta"><span id="outlet-sort-status" class="sort-status">Sorted by over value ↓</span><span id="outlet-result-count" class="result-count">—</span></div></header>
         <div class="table-scroll wide-table">
-          <table class="executive-table outlet-table">
-            <thead><tr><th scope="col">#</th><th scope="col">Outlet</th><th scope="col">Division</th><th scope="col" class="numeric">Received</th><th scope="col" class="numeric">Sold</th><th scope="col" class="numeric">Balance</th><th scope="col" class="numeric">Stock days</th><th scope="col" class="numeric">Over value</th><th scope="col" class="numeric">Over incidents</th><th scope="col" class="numeric">Under incidents</th></tr></thead>
-            <tbody id="outlet-table-body"><tr><td colspan="10" class="empty-cell">Loading outlet exceptions…</td></tr></tbody>
+          <table class="executive-table outlet-table sortable-table">
+            <thead><tr>
+              <th scope="col">#</th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Outlet">Outlet <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Region">Division <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="RHO">RHO <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Zonal">Zonal <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Receiving">Received <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Sales">Sold <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="Gap">Balance <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="StockDay">Stock days <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="OverValue">Over value <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="OverIncidents">Over incidents <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="UnderIncidents">Under incidents <span></span></button></th>
+            </tr></thead>
+            <tbody id="outlet-table-body"><tr><td colspan="12" class="empty-cell">Loading outlet exceptions…</td></tr></tbody>
           </table>
         </div>
       </article>
     </section>
   </main>
 
-  <footer class="dashboard-footer"><span>Live read-only view of the published Power BI model</span><span>Auto-refresh every 15 minutes · Times shown in Bangladesh Standard Time</span></footer>
+  <footer class="dashboard-footer"><span>Live Power BI metrics · Zonal/RHO names from the published Zone Distribution snapshot</span><span>Auto-refresh every 15 minutes · Times shown in Bangladesh Standard Time</span></footer>
+
+  <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title">
+    <div class="detail-shell">
+      <header class="detail-header">
+        <div><span class="section-kicker">CLICK-THROUGH DETAIL</span><h2 id="detail-title">Metric details</h2><p id="detail-context">Loading the selected scope…</p></div>
+        <button id="detail-close" class="detail-close" type="button" aria-label="Close details">×</button>
+      </header>
+      <div id="detail-loading" class="detail-loading"><span class="spinner" aria-hidden="true"></span><strong>Loading article-level details…</strong></div>
+      <div id="detail-error" class="detail-error" hidden></div>
+      <div id="detail-content" hidden>
+        <section id="detail-summary" class="detail-summary" aria-label="Selected metric summary"></section>
+        <div class="detail-toolbar">
+          <label class="search-field detail-search"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span class="sr-only">Search article detail table</span><input id="detail-search" type="search" placeholder="Search article code, name, category or division"></label>
+          <span id="detail-result-count" class="result-count">—</span>
+        </div>
+        <div id="selected-article-detail" class="selected-article-detail" hidden></div>
+        <div class="table-scroll detail-table-scroll">
+          <table class="executive-table detail-table sortable-table">
+            <thead><tr>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="ArticleNo">Article code <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="ArticleName">Article name <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="MasterCategory">Business division <span></span></button></th>
+              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Category">Category <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Receiving">Received <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Sales">Sold <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Gap">Balance <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Inventory">Inventory <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="StockDay">Stock days <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="OverValue">Over value <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="OverIncidents">Over incidents <span></span></button></th>
+              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="UnderIncidents">Under incidents <span></span></button></th>
+            </tr></thead>
+            <tbody id="detail-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </dialog>
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260908-3"></script>
+  <script type="module" src="./app.js?v=20260908-5"></script>
 </body>
 </html>

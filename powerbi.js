@@ -4,6 +4,14 @@ const RESOURCE_KEY = "09822098-d3f2-462b-bf91-1703f0e5e9cc";
 export const POWER_BI_URL = "https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D";
 
 const DEFAULT_MOVEMENT_TYPES = ["101", "102", "303", "304", "305", "551", "552", "Z04", "122", "161", "162", "Z03"];
+const DEFAULT_MASTER_CATEGORIES = [
+  "COMPANY GOODS",
+  "FRESH PRODUCE",
+  "GENERAL MERCHANDISE",
+  "LIFESTYLE",
+  "LOOSE COMMODITY",
+  "PACKED COMMODITY",
+];
 
 function uuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -98,6 +106,7 @@ function savedReportScope(explorationDocument) {
     start: shiftIsoDate(fallbackEnd, -30),
     endExclusive: fallbackEnd,
     masterCategory: "PACKED COMMODITY",
+    masterCategories: DEFAULT_MASTER_CATEGORIES,
     movementTypes: DEFAULT_MOVEMENT_TYPES,
   };
 
@@ -109,6 +118,7 @@ function savedReportScope(explorationDocument) {
     let start = null;
     let endExclusive = null;
     let masterCategory = null;
+    const masterCategories = new Set();
     let movementTypes = [];
 
     for (const container of page.visualContainers || []) {
@@ -128,7 +138,9 @@ function savedReportScope(explorationDocument) {
         }
 
         if (entities.includes("DimArticle") && properties.includes("MasterCategory")) {
-          masterCategory = literals.find(value => /^'.*'$/.test(value))?.slice(1, -1) || masterCategory;
+          const categoryValues = literals.filter(value => /^'.*'$/.test(value)).map(value => value.slice(1, -1));
+          categoryValues.forEach(value => masterCategories.add(value));
+          if (categoryValues.length === 1) masterCategory = categoryValues[0];
         }
 
         if (entities.includes("Query3") && properties.includes("movement_type")) {
@@ -141,6 +153,7 @@ function savedReportScope(explorationDocument) {
       start: start || fallback.start,
       endExclusive: endExclusive || fallback.endExclusive,
       masterCategory: masterCategory || fallback.masterCategory,
+      masterCategories: [...new Set([...fallback.masterCategories, ...masterCategories])].sort(),
       movementTypes: movementTypes.length ? movementTypes : fallback.movementTypes,
     };
   } catch {
@@ -227,7 +240,7 @@ function createQuery(select, from, where, count = 1200) {
   };
 }
 
-function commonWhere(range, scope, filters = {}) {
+function commonWhere(range, scope, filters = {}, excluded = new Set()) {
   const conditions = [
     {
       Condition: {
@@ -252,14 +265,6 @@ function commonWhere(range, scope, filters = {}) {
     {
       Condition: {
         In: {
-          Expressions: [field("a", "MasterCategory")],
-          Values: [[literal(stringLiteral(scope.masterCategory))]],
-        },
-      },
-    },
-    {
-      Condition: {
-        In: {
           Expressions: [field("r", "movement_type")],
           Values: scope.movementTypes.map(value => [literal(stringLiteral(value))]),
         },
@@ -267,7 +272,19 @@ function commonWhere(range, scope, filters = {}) {
     },
   ];
 
-  if (filters.category && filters.category !== "all") {
+  const masterCategory = filters.masterCategory || scope.masterCategory;
+  if (!excluded.has("masterCategory") && masterCategory !== "all") {
+    conditions.push({
+      Condition: {
+        In: {
+          Expressions: [field("a", "MasterCategory")],
+          Values: [[literal(stringLiteral(masterCategory))]],
+        },
+      },
+    });
+  }
+
+  if (!excluded.has("category") && filters.category && filters.category !== "all") {
     conditions.push({
       Condition: {
         In: {
@@ -278,12 +295,35 @@ function commonWhere(range, scope, filters = {}) {
     });
   }
 
-  if (filters.region && filters.region !== "all") {
+  if (!excluded.has("region") && filters.region && filters.region !== "all") {
     conditions.push({
       Condition: {
         In: {
           Expressions: [field("o", "RegionName")],
           Values: [[literal(stringLiteral(filters.region))]],
+        },
+      },
+    });
+  }
+
+  if (!excluded.has("outlet") && Array.isArray(filters.outletCodes)) {
+    const codes = filters.outletCodes.length ? filters.outletCodes : ["__NO_MATCHING_OUTLET__"];
+    conditions.push({
+      Condition: {
+        In: {
+          Expressions: [field("o", "OutletCode")],
+          Values: codes.map(value => [literal(stringLiteral(value))]),
+        },
+      },
+    });
+  }
+
+  if (!excluded.has("article") && filters.articleNo && filters.articleNo !== "all") {
+    conditions.push({
+      Condition: {
+        In: {
+          Expressions: [field("a", "ArticleNo")],
+          Values: [[literal(stringLiteral(filters.articleNo))]],
         },
       },
     });
@@ -350,11 +390,48 @@ export class PowerBIDataClient {
     return this;
   }
 
+  async runSpecs(specs) {
+    const queries = specs.map(spec => ({
+      ...spec.query,
+      ApplicationContext: {
+        DatasetId: this.model.dbName,
+        Sources: [{ ReportId: this.report.objectId }],
+      },
+    }));
+
+    const response = await fetch(`${API_ROOT}/public/reports/querydata?synchronous=true`, {
+      method: "POST",
+      headers: requestHeaders(true),
+      cache: "no-store",
+      body: JSON.stringify({ version: "1.0.0", queries, cancelQueries: [], modelId: this.model.id }),
+    });
+    if (!response.ok) throw new Error(`Power BI data request failed (${response.status}).`);
+
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error.message || "Power BI returned an error.");
+    if (!Array.isArray(payload.results) || payload.results.length < specs.length) {
+      throw new Error("Power BI returned an incomplete dashboard response.");
+    }
+
+    const decoded = {};
+    specs.forEach((spec, index) => {
+      decoded[spec.key] = decodeResult(payload.results?.[index]);
+    });
+
+    return {
+      decoded,
+      queryTimestamp: payload.results[0]?.result?.data?.timestamp || new Date().toISOString(),
+    };
+  }
+
   async load(filters = {}) {
     if (!this.model || !this.report || !this.scope) await this.connect();
 
     const range = rangeForDays(this.scope, filters.days);
     const where = commonWhere(range, this.scope, filters);
+    const categoryOptionWhere = commonWhere(range, this.scope, filters, new Set(["category", "article"]));
+    const articleOptionWhere = commonWhere(range, this.scope, filters, new Set(["article"]));
+    const outletOptionWhere = commonWhere(range, this.scope, filters, new Set(["region", "outlet"]));
 
     const specs = [
       { key: "kpis", query: createQuery(KPI_SELECT, COMMON_FROM, where, 50) },
@@ -405,38 +482,60 @@ export class PowerBIDataClient {
           measure("m", "Under Receiving Incidents", "UnderIncidents"),
         ], COMMON_FROM, where, 5000),
       },
+      {
+        key: "categoryOptions",
+        query: createQuery([column("a", "Category3", "Category")], COMMON_FROM, categoryOptionWhere, 1000),
+      },
+      {
+        key: "articleOptions",
+        query: createQuery([
+          column("a", "ArticleNo", "ArticleNo"),
+          column("a", "ArticleName", "ArticleName"),
+          column("a", "Category3", "Category"),
+        ], COMMON_FROM, articleOptionWhere, 8000),
+      },
+      {
+        key: "outletOptions",
+        query: createQuery([
+          column("o", "OutletCode", "OutletCode"),
+          column("o", "OutletName", "Outlet"),
+          column("o", "RegionName", "Region"),
+        ], COMMON_FROM, outletOptionWhere, 5000),
+      },
     ];
 
-    const queries = specs.map(spec => ({
-      ...spec.query,
-      ApplicationContext: {
-        DatasetId: this.model.dbName,
-        Sources: [{ ReportId: this.report.objectId }],
-      },
-    }));
-
-    const response = await fetch(`${API_ROOT}/public/reports/querydata?synchronous=true`, {
-      method: "POST",
-      headers: requestHeaders(true),
-      cache: "no-store",
-      body: JSON.stringify({ version: "1.0.0", queries, cancelQueries: [], modelId: this.model.id }),
-    });
-    if (!response.ok) throw new Error(`Power BI data request failed (${response.status}).`);
-
-    const payload = await response.json();
-    if (payload.error) throw new Error(payload.error.message || "Power BI returned an error.");
-
-    const decoded = {};
-    specs.forEach((spec, index) => {
-      decoded[spec.key] = decodeResult(payload.results?.[index]);
-    });
+    const { decoded, queryTimestamp } = await this.runSpecs(specs);
 
     return {
       ...decoded,
       range,
       sourceTimestamp: this.sourceTimestamp,
-      queryTimestamp: payload.results?.[0]?.result?.data?.timestamp || new Date().toISOString(),
+      queryTimestamp,
       scope: this.scope,
     };
+  }
+
+  async loadArticleDetails(filters = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect();
+    const range = rangeForDays(this.scope, filters.days);
+    const where = commonWhere(range, this.scope, filters);
+    const specs = [{
+      key: "articles",
+      query: createQuery([
+        column("a", "ArticleNo", "ArticleNo"),
+        column("a", "ArticleName", "ArticleName"),
+        column("a", "MasterCategory", "MasterCategory"),
+        column("a", "Category3", "Category"),
+        sum("s", "ActualInvoicedQuantity", "Sales"),
+        sum("r", "qty_in_unit_of_entry", "Receiving"),
+        measure("m", "Total Inventory", "Inventory"),
+        measure("m", "Stock Day", "StockDay"),
+        measure("m", "Over Receiving Value", "OverValue"),
+        measure("m", "Over Receiving Incidents", "OverIncidents"),
+        measure("m", "Under Receiving Incidents", "UnderIncidents"),
+      ], COMMON_FROM, where, 10000),
+    }];
+    const { decoded, queryTimestamp } = await this.runSpecs(specs);
+    return { rows: decoded.articles, range, queryTimestamp };
   }
 }
