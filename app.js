@@ -312,7 +312,11 @@ function renderTrend(rows) {
   const path = key => values.map((row, index) => `${index ? "L" : "M"}${x(index).toFixed(2)},${y(row[key]).toFixed(2)}`).join(" ");
   const tickCount = 4;
   const yTicks = Array.from({ length: tickCount + 1 }, (_, index) => (yMax / tickCount) * index);
-  const xIndexes = [...new Set(Array.from({ length: Math.min(5, values.length) }, (_, index, array) => Math.round(index * (values.length - 1) / Math.max(1, array.length - 1))))];
+  const xTickCount = Math.min(5, values.length);
+  const xIndexes = [...new Set(Array.from(
+    { length: xTickCount },
+    (_, index) => Math.round(index * (values.length - 1) / Math.max(1, xTickCount - 1))
+  ))];
 
   const grid = yTicks.map(value => `
     <line class="chart-gridline" x1="${margin.left}" y1="${y(value)}" x2="${width - margin.right}" y2="${y(value)}" />
