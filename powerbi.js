@@ -424,7 +424,7 @@ export class PowerBIDataClient {
     };
   }
 
-  async load(filters = {}) {
+  async load(filters = {}, { section = "all" } = {}) {
     if (!this.model || !this.report || !this.scope) await this.connect();
 
     const range = rangeForDays(this.scope, filters.days);
@@ -504,7 +504,10 @@ export class PowerBIDataClient {
       },
     ];
 
-    const { decoded, queryTimestamp } = await this.runSpecs(specs);
+    const requestedSpecs = section === "core" ? specs.slice(0, 4)
+      : section === "supporting" ? specs.slice(4)
+        : specs;
+    const { decoded, queryTimestamp } = await this.runSpecs(requestedSpecs);
 
     return {
       ...decoded,

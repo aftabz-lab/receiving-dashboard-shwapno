@@ -4,7 +4,7 @@ import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
 const DASHBOARD_CACHE_MS = 24 * 60 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v7";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v8";
 const DETAIL_ROW_LIMIT = 400;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
@@ -1122,16 +1122,29 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     const organizationPromise = refreshMetadata || !state.organizationPromise
       ? (state.organizationPromise = refreshOrganization())
       : state.organizationPromise;
-    const dataPromise = state.client.load(buildPowerBIFilters());
+    const requestFilters = buildPowerBIFilters();
+    const dataPromise = state.client.load(requestFilters, { section: "core" });
     const [data] = await Promise.all([dataPromise, organizationPromise]);
     if (sequence !== state.loadSequence) return;
     state.data = data;
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    saveDashboardCache(data);
     renderAll(data);
     dom.statusDot.className = "status-dot";
     dom.connectionStatus.textContent = "Live Power BI data";
-    dom.sourceFreshness.textContent = `Model refreshed ${dhakaDateTime(data.sourceTimestamp)}`;
+    dom.sourceFreshness.textContent = `Overview ready · loading outlet and search data…`;
+    setLoading(false);
+
+    state.client.load(requestFilters, { section: "supporting" }).then(supporting => {
+      if (sequence !== state.loadSequence) return;
+      state.data = { ...state.data, ...supporting };
+      saveDashboardCache(state.data);
+      renderAll(state.data);
+      dom.sourceFreshness.textContent = `Model refreshed ${dhakaDateTime(state.data.sourceTimestamp)}`;
+    }).catch(error => {
+      if (sequence !== state.loadSequence) return;
+      console.warn("Supporting dashboard data could not be loaded", error);
+      dom.sourceFreshness.textContent = `Overview ready · outlet/search data unavailable; refresh to retry`;
+    });
   } catch (error) {
     if (sequence !== state.loadSequence) return;
     console.error("Dashboard refresh failed", error);
