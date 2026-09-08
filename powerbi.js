@@ -515,10 +515,28 @@ export class PowerBIDataClient {
     };
   }
 
-  async loadArticleDetails(filters = {}) {
+  async loadArticleDetails(filters = {}, metric = "OverValue") {
     if (!this.model || !this.report || !this.scope) await this.connect();
     const range = rangeForDays(this.scope, filters.days);
     const where = commonWhere(range, this.scope, filters);
+    const metricColumns = {
+      Receiving: [sum("r", "qty_in_unit_of_entry", "Receiving")],
+      Sales: [sum("s", "ActualInvoicedQuantity", "Sales")],
+      Gap: [
+        sum("r", "qty_in_unit_of_entry", "Receiving"),
+        sum("s", "ActualInvoicedQuantity", "Sales"),
+      ],
+      Inventory: [measure("m", "Total Inventory", "Inventory")],
+      StockDay: [measure("m", "Stock Day", "StockDay")],
+      OverValue: [measure("m", "Over Receiving Value", "OverValue")],
+      OverIncidents: [measure("m", "Over Receiving Incidents", "OverIncidents")],
+      UnderIncidents: [measure("m", "Under Receiving Incidents", "UnderIncidents")],
+      Incidents: [
+        measure("m", "Over Receiving Incidents", "OverIncidents"),
+        measure("m", "Under Receiving Incidents", "UnderIncidents"),
+      ],
+    };
+    const selectedMetrics = metricColumns[metric] || metricColumns.OverValue;
     const specs = [{
       key: "articles",
       query: createQuery([
@@ -526,14 +544,8 @@ export class PowerBIDataClient {
         column("a", "ArticleName", "ArticleName"),
         column("a", "MasterCategory", "MasterCategory"),
         column("a", "Category3", "Category"),
-        sum("s", "ActualInvoicedQuantity", "Sales"),
-        sum("r", "qty_in_unit_of_entry", "Receiving"),
-        measure("m", "Total Inventory", "Inventory"),
-        measure("m", "Stock Day", "StockDay"),
-        measure("m", "Over Receiving Value", "OverValue"),
-        measure("m", "Over Receiving Incidents", "OverIncidents"),
-        measure("m", "Under Receiving Incidents", "UnderIncidents"),
-      ], COMMON_FROM, where, 10000),
+        ...selectedMetrics,
+      ], COMMON_FROM, where, 5000),
     }];
     const { decoded, queryTimestamp } = await this.runSpecs(specs);
     return { rows: decoded.articles, range, queryTimestamp };

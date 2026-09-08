@@ -2,6 +2,9 @@ import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
+const DETAIL_CACHE_MS = 5 * 60 * 1000;
+const DASHBOARD_CACHE_MS = 24 * 60 * 60 * 1000;
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v6";
 const DETAIL_ROW_LIMIT = 400;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
@@ -37,12 +40,15 @@ const state = {
     detail: { key: "OverValue", direction: "desc" },
   },
   detailRows: [],
+  detailColumns: [],
+  detailCache: new Map(),
   detailMetric: "OverValue",
   detailContext: null,
   detailSearch: "",
   loadSequence: 0,
   detailSequence: 0,
   nextRefreshAt: 0,
+  visibleRows: { region: [], outlet: [], detail: [] },
 };
 
 const el = id => document.getElementById(id);
@@ -93,6 +99,7 @@ const dom = {
   detailContent: el("detail-content"),
   detailSummary: el("detail-summary"),
   detailSearch: el("detail-search"),
+  detailHead: el("detail-table-head"),
   detailTable: el("detail-table-body"),
   selectedArticle: el("selected-article-detail"),
 };
@@ -203,6 +210,32 @@ function setText(id, value, title = "") {
 function uniqueSorted(values) {
   return [...new Set(values.map(value => String(value ?? "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function filtersAreDefault() {
+  return Object.entries(DEFAULT_FILTERS).every(([key, value]) => state.filters[key] === value);
+}
+
+function saveDashboardCache(data) {
+  if (!filtersAreDefault()) return;
+  try {
+    localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+  } catch {}
+}
+
+function restoreDashboardCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || "null");
+    if (!cached?.data || !cached.savedAt || Date.now() - cached.savedAt > DASHBOARD_CACHE_MS) return false;
+    state.data = cached.data;
+    renderAll(state.data);
+    dom.statusDot.className = "status-dot is-loading";
+    dom.connectionStatus.textContent = "Refreshing live data";
+    dom.sourceFreshness.textContent = `Showing saved view from ${dhakaDateTime(cached.savedAt)}`;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function addSelectOptions(select, values, allLabel, selected) {
@@ -433,6 +466,7 @@ async function refreshOrganization() {
     state.organization = organization;
     dom.organizationStatus.classList.remove("is-warning");
     dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet mappings · updated ${dhakaDateTime(organization.updatedAt)}`;
+    if (state.data) renderAll(state.data);
     return organization;
   } catch (error) {
     console.warn("Organization mapping unavailable", error);
@@ -594,6 +628,84 @@ const sortLabels = {
   UnderIncidents: "under incidents", Incidents: "incidents", Position: "position",
 };
 
+const detailFieldDefinitions = {
+  ArticleNo: { label: "Article code", numeric: false, format: value => value ?? "" },
+  ArticleName: { label: "Article name", numeric: false, format: value => value ?? "" },
+  MasterCategory: { label: "Business division", numeric: false, format: value => value ?? "" },
+  Category: { label: "Category", numeric: false, format: value => value ?? "" },
+  Receiving: { label: "Received", numeric: true, format: exact },
+  Sales: { label: "Sold", numeric: true, format: exact },
+  Gap: { label: "Balance", numeric: true, format: exact },
+  Inventory: { label: "Inventory", numeric: true, format: exact },
+  StockDay: { label: "Stock days", numeric: true, format: value => finite(value) == null ? "" : Number(value).toFixed(1) },
+  OverValue: { label: "Over value", numeric: true, format: value => finite(value) == null ? "" : Number(value).toFixed(2) },
+  OverIncidents: { label: "Over incidents", numeric: true, format: exact },
+  UnderIncidents: { label: "Under incidents", numeric: true, format: exact },
+  Incidents: { label: "Total incidents", numeric: true, format: exact },
+};
+
+function columnsForDetailMetric(metric) {
+  const metricFields = metric === "Gap"
+    ? ["Receiving", "Sales", "Gap"]
+    : metric === "Incidents"
+      ? ["OverIncidents", "UnderIncidents", "Incidents"]
+      : [metric];
+  return ["ArticleNo", "ArticleName", "MasterCategory", "Category", ...metricFields]
+    .map(key => ({ key, ...detailFieldDefinitions[key] }))
+    .filter(column => column.label);
+}
+
+function csvColumns(table) {
+  if (table === "region") return [
+    { key: "Region", label: "Division", value: row => plainRegion(row) },
+    { key: "Receiving", label: "Received" }, { key: "Sales", label: "Sold" },
+    { key: "Gap", label: "Balance" }, { key: "OverValue", label: "Over value" },
+    { key: "Incidents", label: "Incidents" }, { key: "Position", label: "Position" },
+  ];
+  if (table === "outlet") return [
+    { key: "Rank", label: "Rank", value: row => row.__rank },
+    { key: "OutletCode", label: "Outlet code" }, { key: "Outlet", label: "Outlet name", value: row => plainOutlet(row) },
+    { key: "Region", label: "Division", value: row => plainRegion(row) },
+    { key: "RHO", label: "RHO" }, { key: "Zonal", label: "Zonal" }, { key: "Area", label: "Area" },
+    { key: "Receiving", label: "Received" }, { key: "Sales", label: "Sold" }, { key: "Gap", label: "Balance" },
+    { key: "StockDay", label: "Stock days" }, { key: "OverValue", label: "Over value" },
+    { key: "OverIncidents", label: "Over incidents" }, { key: "UnderIncidents", label: "Under incidents" },
+  ];
+  return state.detailColumns.map(column => ({ key: column.key, label: column.label }));
+}
+
+function csvCell(value) {
+  if (value == null) return "";
+  let rendered = String(value);
+  if (typeof value === "string" && /^[=+\-@]/.test(rendered)) rendered = `'${rendered}`;
+  return `"${rendered.replaceAll('"', '""')}"`;
+}
+
+function exportVisibleCsv(table) {
+  const rows = state.visibleRows[table] || [];
+  if (!rows.length) return;
+  const columns = csvColumns(table);
+  const lines = [
+    columns.map(column => csvCell(column.label)).join(","),
+    ...rows.map(row => columns.map(column => csvCell(column.value ? column.value(row) : row[column.key])).join(",")),
+  ];
+  const blob = new Blob(["\uFEFF", lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const scope = state.filters.masterCategory === "all" ? "all-business-divisions" : state.filters.masterCategory.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-");
+  link.href = url;
+  link.download = `receiving-${table}-visible-${scope}-${state.data?.range?.endExclusive || "current"}.csv`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function setExportAvailability(table, hasRows) {
+  const button = document.querySelector(`[data-export-table="${table}"]`);
+  if (button) button.disabled = !hasRows;
+}
+
 function sortRows(rows, table) {
   const { key, direction } = state.sorts[table];
   const multiplier = direction === "asc" ? 1 : -1;
@@ -636,6 +748,8 @@ function renderRegions(rows) {
     return { ...row, Receiving: receiving, Sales: sales, Gap, Incidents, Position };
   });
   const sorted = sortRows(values, "region");
+  state.visibleRows.region = sorted;
+  setExportAvailability("region", sorted.length > 0);
   updateSortIndicators("region");
   if (!sorted.length) {
     dom.regionTable.innerHTML = '<tr><td colspan="7" class="empty-cell">No division data is available for this selection.</td></tr>';
@@ -704,7 +818,9 @@ function renderOutlets() {
   if (!state.data) return;
   const config = focusConfig[state.exceptionFocus];
   const rows = filteredRankedOutlets();
-  const visible = rows.slice(0, 50);
+  const visible = rows.slice(0, 50).map((row, index) => ({ ...row, __rank: index + 1 }));
+  state.visibleRows.outlet = visible;
+  setExportAvailability("outlet", visible.length > 0);
   setText("exceptions-description", config.description);
   setText("outlet-table-title", config.title);
   setText("outlet-table-note", `Showing the first ${Math.min(50, rows.length)} ranked outlets. Click any number for article details.`);
@@ -802,6 +918,24 @@ function openDialog() {
   if (!dom.detailDialog.open) dom.detailDialog.showModal();
 }
 
+function detailCacheKey(filters, metric) {
+  return JSON.stringify({ metric, filters });
+}
+
+function prepareDetailRows(rows) {
+  return rows
+    .filter(row => row.ArticleNo)
+    .map(row => ({
+      ...row,
+      Gap: finite(row.Receiving) != null || finite(row.Sales) != null
+        ? (finite(row.Receiving) ?? 0) - (finite(row.Sales) ?? 0)
+        : null,
+      Incidents: finite(row.OverIncidents) != null || finite(row.UnderIncidents) != null
+        ? (finite(row.OverIncidents) ?? 0) + (finite(row.UnderIncidents) ?? 0)
+        : null,
+    }));
+}
+
 async function openDrill(metric, context = null) {
   if (!state.data) return;
   if (metric === "ActiveOutlets") {
@@ -816,6 +950,7 @@ async function openDrill(metric, context = null) {
   const sequence = ++state.detailSequence;
   const definition = metricDefinition(metric);
   state.detailMetric = definition.field;
+  state.detailColumns = columnsForDetailMetric(definition.field);
   state.detailContext = context;
   state.detailSearch = "";
   dom.detailSearch.value = "";
@@ -830,13 +965,21 @@ async function openDrill(metric, context = null) {
   openDialog();
 
   try {
-    const result = await state.client.loadArticleDetails(detailFiltersForContext(context));
+    const filters = detailFiltersForContext(context);
+    const cacheKey = detailCacheKey(filters, definition.field);
+    const cached = state.detailCache.get(cacheKey);
+    if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
+      state.detailRows = cached.rows;
+      dom.detailLoading.hidden = true;
+      dom.detailContent.hidden = false;
+      renderDetail();
+      return;
+    }
+
+    const result = await state.client.loadArticleDetails(filters, definition.field);
     if (sequence !== state.detailSequence) return;
-    state.detailRows = result.rows.map(row => ({
-      ...row,
-      Gap: (finite(row.Receiving) ?? 0) - (finite(row.Sales) ?? 0),
-      Incidents: (finite(row.OverIncidents) ?? 0) + (finite(row.UnderIncidents) ?? 0),
-    }));
+    state.detailRows = prepareDetailRows(result.rows);
+    state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
     dom.detailLoading.hidden = true;
     dom.detailContent.hidden = false;
     renderDetail();
@@ -874,44 +1017,64 @@ function detailNumber(row, metric, display) {
   return `<button class="number-link" type="button" data-detail-article="${escapeHtml(row.ArticleNo)}" title="Show this article record">${escapeHtml(display)}</button>`;
 }
 
+function applySort(table, key) {
+  const current = state.sorts[table];
+  state.sorts[table] = current.key === key
+    ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+    : { key, direction: ["Region", "Outlet", "RHO", "Zonal", "ArticleNo", "ArticleName", "MasterCategory", "Category", "Position"].includes(key) ? "asc" : "desc" };
+  if (table === "region") renderRegions(state.data?.regions || []);
+  if (table === "outlet") renderOutlets();
+  if (table === "detail") renderDetail();
+}
+
+function renderDetailHeader() {
+  dom.detailHead.innerHTML = state.detailColumns.map(column => `<th scope="col"${column.numeric ? ' class="numeric"' : ""}><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)} <span></span></button></th>`).join("");
+  dom.detailHead.querySelectorAll(".sort-button").forEach(button => {
+    button.addEventListener("click", () => applySort("detail", button.dataset.sortKey));
+  });
+}
+
+function detailDisplay(row, column) {
+  const value = row[column.key];
+  if (!column.numeric) return escapeHtml(value || (column.key === "ArticleName" ? "Unnamed article" : "—"));
+  const display = column.key === "Gap" ? signedCompact(value)
+    : column.key === "OverValue" ? bdt(value)
+      : column.key === "StockDay" ? (finite(value) == null ? "—" : Number(value).toFixed(1))
+        : compact(value);
+  return detailNumber(row, column.key, display);
+}
+
 function renderDetail() {
   const query = state.detailSearch.trim().toLocaleLowerCase();
   const filtered = state.detailRows.filter(row => !query || [row.ArticleNo, row.ArticleName, row.MasterCategory, row.Category, detailScopeLabel()]
     .some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
   const sorted = sortRows(filtered, "detail");
   const visible = sorted.slice(0, DETAIL_ROW_LIMIT);
+  state.visibleRows.detail = visible;
+  setExportAvailability("detail", visible.length > 0);
+  renderDetailHeader();
   updateSortIndicators("detail");
   renderDetailSummary(state.detailRows.length);
   setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} article rows`);
 
   if (!visible.length) {
-    dom.detailTable.innerHTML = '<tr><td colspan="12" class="empty-cell">No article rows match the current detail search.</td></tr>';
+    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">No article rows match the current detail search.</td></tr>`;
     return;
   }
 
-  dom.detailTable.innerHTML = visible.map(row => `<tr>
-    <td>${escapeHtml(row.ArticleNo || "—")}</td><td>${escapeHtml(row.ArticleName || "Unnamed article")}</td><td>${escapeHtml(row.MasterCategory || "—")}</td><td>${escapeHtml(row.Category || "—")}</td>
-    <td class="numeric">${detailNumber(row, "Receiving", compact(row.Receiving))}</td>
-    <td class="numeric">${detailNumber(row, "Sales", compact(row.Sales))}</td>
-    <td class="numeric">${detailNumber(row, "Gap", signedCompact(row.Gap))}</td>
-    <td class="numeric">${detailNumber(row, "Inventory", compact(row.Inventory))}</td>
-    <td class="numeric">${detailNumber(row, "StockDay", finite(row.StockDay) == null ? "—" : Number(row.StockDay).toFixed(1))}</td>
-    <td class="numeric">${detailNumber(row, "OverValue", bdt(row.OverValue))}</td>
-    <td class="numeric">${detailNumber(row, "OverIncidents", exact(row.OverIncidents))}</td>
-    <td class="numeric">${detailNumber(row, "UnderIncidents", exact(row.UnderIncidents))}</td></tr>`).join("");
+  dom.detailTable.innerHTML = visible.map(row => `<tr>${state.detailColumns.map(column => `<td${column.numeric ? ' class="numeric"' : ""}>${detailDisplay(row, column)}</td>`).join("")}</tr>`).join("");
 }
 
 function showArticleRecord(articleNo) {
   const row = state.detailRows.find(item => String(item.ArticleNo) === String(articleNo));
   if (!row) return;
   const contextOrganization = state.detailContext?.type === "outlet" ? organizationForCode(state.detailContext.value) : null;
+  const metricFields = state.detailColumns.filter(column => column.numeric).map(column => [column.label, column.key === "OverValue" ? bdt(row[column.key]) : column.key === "Gap" ? signedCompact(row[column.key]) : column.key === "StockDay" ? (finite(row[column.key]) == null ? "—" : Number(row[column.key]).toFixed(1)) : exact(row[column.key])]);
   const fields = [
     ["Article", `${row.ArticleNo} — ${row.ArticleName || "Unnamed"}`],
     ["Selected scope", detailScopeLabel()],
     ["RHO / Zonal", contextOrganization ? `${contextOrganization.RHO} / ${contextOrganization.Zonal}` : "Current filtered scope"],
-    ["Received", exact(row.Receiving)], ["Sold", exact(row.Sales)], ["Balance", signedCompact(row.Gap)],
-    ["Inventory", exact(row.Inventory)], ["Stock days", finite(row.StockDay) == null ? "—" : Number(row.StockDay).toFixed(1)],
-    ["Over value", bdt(row.OverValue)],
+    ...metricFields,
   ];
   dom.selectedArticle.innerHTML = fields.map(([label, value]) => `<div class="record-field"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("");
   dom.selectedArticle.hidden = false;
@@ -928,7 +1091,10 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
   }
 
   try {
-    if (refreshMetadata) state.client = new PowerBIDataClient();
+    if (refreshMetadata) {
+      state.client = new PowerBIDataClient();
+      state.detailCache.clear();
+    }
     const organizationPromise = refreshMetadata || !state.organizationPromise
       ? (state.organizationPromise = refreshOrganization())
       : state.organizationPromise;
@@ -937,6 +1103,7 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (sequence !== state.loadSequence) return;
     state.data = data;
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+    saveDashboardCache(data);
     renderAll(data);
     dom.statusDot.className = "status-dot";
     dom.connectionStatus.textContent = "Live Power BI data";
@@ -1053,17 +1220,11 @@ document.querySelectorAll(".focus-button").forEach(button => {
 });
 
 document.querySelectorAll(".sort-button").forEach(button => {
-  button.addEventListener("click", () => {
-    const table = button.dataset.sortTable;
-    const key = button.dataset.sortKey;
-    const current = state.sorts[table];
-    state.sorts[table] = current.key === key
-      ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
-      : { key, direction: ["Region", "Outlet", "RHO", "Zonal", "ArticleNo", "ArticleName", "MasterCategory", "Category", "Position"].includes(key) ? "asc" : "desc" };
-    if (table === "region") renderRegions(state.data?.regions || []);
-    if (table === "outlet") renderOutlets();
-    if (table === "detail") renderDetail();
-  });
+  button.addEventListener("click", () => applySort(button.dataset.sortTable, button.dataset.sortKey));
+});
+
+document.querySelectorAll("[data-export-table]").forEach(button => {
+  button.addEventListener("click", () => exportVisibleCsv(button.dataset.exportTable));
 });
 
 dom.main.addEventListener("click", event => {
@@ -1183,4 +1344,5 @@ window.setInterval(() => {
 }, 60_000);
 
 setTheme(document.documentElement.dataset.theme);
+restoreDashboardCache();
 export const dashboardReady = loadDashboard({ refreshMetadata: true });

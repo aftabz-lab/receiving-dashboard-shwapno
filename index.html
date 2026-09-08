@@ -11,7 +11,7 @@
   </script>
   <link rel="preconnect" href="https://wabi-east-asia-b-primary-api.analysis.windows.net" crossorigin>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260908-5">
+  <link rel="stylesheet" href="./styles.css?v=20260908-6">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to dashboard</a>
@@ -118,7 +118,7 @@
         <article class="panel category-panel"><header class="panel-header"><div><span class="section-kicker">CATEGORY MIX</span><h2>Receipt balance by category</h2><p>Received minus sold units. Right builds inventory; left draws it down.</p></div></header><div id="category-chart" class="chart-frame chart-skeleton" aria-live="polite"></div></article>
 
         <article class="panel region-panel">
-          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Click any number for article-level details. Select any header to sort ascending or descending.</p></div><span id="region-sort-status" class="sort-status">Sorted by over value ↓</span></header>
+          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Click any number for article-level details. Select any header to sort ascending or descending.</p></div><div class="table-head-meta"><span id="region-sort-status" class="sort-status">Sorted by over value ↓</span><button class="csv-button" type="button" data-export-table="region" disabled>Visible CSV</button></div></header>
           <div class="table-scroll">
             <table class="executive-table sortable-table">
               <thead><tr>
@@ -148,7 +148,7 @@
       <section id="exception-summary" class="exception-summary" aria-label="Top outlet exceptions"></section>
 
       <article class="panel outlet-panel">
-        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Click any number for article-level details; select any header to sort.</p></div><div class="table-head-meta"><span id="outlet-sort-status" class="sort-status">Sorted by over value ↓</span><span id="outlet-result-count" class="result-count">—</span></div></header>
+        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Click any number for article-level details; select any header to sort.</p></div><div class="table-head-meta"><span id="outlet-sort-status" class="sort-status">Sorted by over value ↓</span><span id="outlet-result-count" class="result-count">—</span><button class="csv-button" type="button" data-export-table="outlet" disabled>Visible CSV</button></div></header>
         <div class="table-scroll wide-table">
           <table class="executive-table outlet-table sortable-table">
             <thead><tr>
@@ -186,25 +186,12 @@
         <section id="detail-summary" class="detail-summary" aria-label="Selected metric summary"></section>
         <div class="detail-toolbar">
           <label class="search-field detail-search"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span class="sr-only">Search article detail table</span><input id="detail-search" type="search" placeholder="Search article code, name, category or division"></label>
-          <span id="detail-result-count" class="result-count">—</span>
+          <div class="detail-toolbar-actions"><span id="detail-result-count" class="result-count">—</span><button class="csv-button" type="button" data-export-table="detail" disabled>Visible CSV</button></div>
         </div>
         <div id="selected-article-detail" class="selected-article-detail" hidden></div>
         <div class="table-scroll detail-table-scroll">
           <table class="executive-table detail-table sortable-table">
-            <thead><tr>
-              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="ArticleNo">Article code <span></span></button></th>
-              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="ArticleName">Article name <span></span></button></th>
-              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="MasterCategory">Business division <span></span></button></th>
-              <th scope="col"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Category">Category <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Receiving">Received <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Sales">Sold <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Gap">Balance <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="Inventory">Inventory <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="StockDay">Stock days <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="OverValue">Over value <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="OverIncidents">Over incidents <span></span></button></th>
-              <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="UnderIncidents">Under incidents <span></span></button></th>
-            </tr></thead>
+            <thead><tr id="detail-table-head"><th scope="col">Article code</th><th scope="col">Article name</th><th scope="col">Business division</th><th scope="col">Category</th><th scope="col" class="numeric">Selected metric</th></tr></thead>
             <tbody id="detail-table-body"></tbody>
           </table>
         </div>
@@ -214,6 +201,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260908-5"></script>
+  <script type="module" src="./app.js?v=20260908-6"></script>
 </body>
 </html>
