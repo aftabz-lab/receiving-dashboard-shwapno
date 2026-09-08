@@ -3,76 +3,215 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b1420">
-  <meta name="description" content="Shwapno receiving intelligence dashboard for monitoring over receiving, under receiving, stock, sales and PO-level exceptions.">
+  <meta name="theme-color" content="#102b4e">
+  <meta name="description" content="Receiving Dashboard-Shwapno — an executive view of live receiving, sales, inventory and outlet exceptions from Power BI.">
   <title>Receiving Dashboard-Shwapno</title>
-  <link rel="preconnect" href="https://app.powerbi.com" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260908-1">
+  <link rel="preconnect" href="https://wabi-east-asia-b-primary-api.analysis.windows.net" crossorigin>
+  <link rel="stylesheet" href="./styles.css?v=20260908-2">
 </head>
 <body>
-  <header id="app-header" class="app-header">
-    <a class="brand" href="https://aftabz-lab.github.io/" aria-label="Return to Shwapno Dashboard Portal">
-      <span class="brand-mark" aria-hidden="true">S</span>
-      <span class="brand-copy">
-        <strong>SHWAPNO</strong>
-        <small>OPERATIONS INTELLIGENCE</small>
-      </span>
-    </a>
+  <a class="skip-link" href="#main-content">Skip to dashboard</a>
 
-    <div class="report-title">
-      <span class="eyebrow">SUPPLY CHAIN CONTROL</span>
-      <h1>Receiving Dashboard-Shwapno</h1>
+  <header class="topbar">
+    <div class="brand-lockup">
+      <a class="brand-mark" href="https://aftabz-lab.github.io/" aria-label="Return to dashboard portal">
+        <span aria-hidden="true">S</span>
+      </a>
+      <div class="brand-copy">
+        <span class="product-label">SHWAPNO · SUPPLY CHAIN</span>
+        <h1>Receiving Dashboard</h1>
+      </div>
     </div>
 
-    <div class="report-actions">
-      <div class="live-status" role="status" aria-live="polite">
-        <span id="status-dot" class="status-dot loading" aria-hidden="true"></span>
+    <div class="topbar-actions">
+      <div class="source-status" role="status" aria-live="polite">
+        <span id="status-dot" class="status-dot is-loading" aria-hidden="true"></span>
         <span>
-          <strong id="connection-status">Loading Power BI</strong>
-          <small id="refresh-status">Auto refresh every 15 minutes</small>
+          <strong id="connection-status">Connecting to live data</strong>
+          <small id="source-freshness">Reading the published Power BI model…</small>
         </span>
       </div>
-      <button id="refresh-report" class="action-button primary" type="button" title="Reload the latest Power BI report">
-        <span class="button-icon" aria-hidden="true">↻</span>
+      <button id="refresh-dashboard" class="icon-button" type="button" title="Refresh dashboard data">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M6.1 9A7 7 0 0 1 18 6.8L20 11M4 13l2 4.2A7 7 0 0 0 17.9 15"/></svg>
         <span>Refresh</span>
       </button>
-      <button id="fullscreen-report" class="action-button" type="button" title="Open the dashboard in full screen">
-        <span class="button-icon" aria-hidden="true">⛶</span>
-        <span id="fullscreen-label">Full screen</span>
-      </button>
-      <a id="open-powerbi" class="action-button" href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D" target="_blank" rel="noopener noreferrer" title="Open the original report in Power BI">
-        <span class="button-icon" aria-hidden="true">↗</span>
-        <span>Power BI</span>
+      <a id="open-powerbi" class="icon-button secondary" href="#" target="_blank" rel="noopener noreferrer">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4"/></svg>
+        <span>Source report</span>
       </a>
     </div>
   </header>
 
-  <main id="report-shell" class="report-shell" aria-label="Receiving Dashboard workspace">
-    <div id="loading-layer" class="loading-layer" role="status" aria-live="polite">
-      <span class="spinner" aria-hidden="true"></span>
-      <div>
-        <strong id="loading-title">Opening Receiving Dashboard</strong>
-        <small id="loading-message">Connecting to the latest published Power BI report…</small>
-      </div>
-      <button id="retry-report" class="retry-button" type="button" hidden>Try again</button>
+  <div class="control-deck" aria-label="Dashboard controls">
+    <div class="view-tabs" role="tablist" aria-label="Dashboard views">
+      <button id="overview-tab" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="overview-view" data-view="overview">
+        Executive overview
+      </button>
+      <button id="exceptions-tab" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="exceptions-view" data-view="exceptions">
+        Outlet exceptions <span id="exception-count" class="tab-count">—</span>
+      </button>
     </div>
 
-    <iframe
-      id="report-frame"
-      title="Receiving Dashboard-Shwapno Power BI report"
-      src="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D"
-      data-report-url="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D"
-      allow="fullscreen"
-      allowfullscreen
-      referrerpolicy="strict-origin-when-cross-origin"
-    ></iframe>
+    <div class="filters">
+      <label class="filter-field">
+        <span>Period</span>
+        <select id="period-filter">
+          <option value="7">Latest 7 days</option>
+          <option value="30" selected>Latest 30 days</option>
+          <option value="60">Latest 60 days</option>
+          <option value="90">Latest 90 days</option>
+        </select>
+      </label>
+      <label class="filter-field">
+        <span>Division</span>
+        <select id="region-filter">
+          <option value="all">All divisions</option>
+        </select>
+      </label>
+      <label class="filter-field">
+        <span>Category</span>
+        <select id="category-filter">
+          <option value="all">All categories</option>
+        </select>
+      </label>
+      <button id="reset-filters" class="reset-button" type="button">Reset filters</button>
+    </div>
+  </div>
 
-    <noscript>
-      <div class="noscript-message">JavaScript is required for automatic refresh. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report directly.</a></div>
-    </noscript>
+  <div id="loading-bar" class="loading-bar" aria-hidden="true"><span></span></div>
+
+  <main id="main-content" class="dashboard" tabindex="-1" aria-busy="true">
+    <section id="error-panel" class="error-panel" role="alert" hidden>
+      <div class="error-icon" aria-hidden="true">!</div>
+      <div>
+        <strong>Live dashboard data could not be loaded</strong>
+        <p id="error-message">Check the connection and try again. The source report remains available.</p>
+      </div>
+      <button id="retry-dashboard" type="button">Try again</button>
+      <a id="error-powerbi-link" href="#" target="_blank" rel="noopener noreferrer">Open Power BI</a>
+    </section>
+
+    <section id="overview-view" class="dashboard-view" role="tabpanel" aria-labelledby="overview-tab">
+      <section class="executive-pulse" aria-labelledby="pulse-title">
+        <div class="pulse-heading">
+          <span class="section-kicker">EXECUTIVE PULSE</span>
+          <h2 id="pulse-title">Receiving position at a glance</h2>
+          <p id="report-context">Packed Commodity · Latest 30 complete days</p>
+        </div>
+        <div class="pulse-statement">
+          <span id="balance-label" class="signal-badge neutral">Receipt balance</span>
+          <strong id="balance-headline">Loading current position…</strong>
+          <p id="balance-detail">Comparing received units with invoiced sales for the selected scope.</p>
+        </div>
+        <div class="pulse-meta">
+          <span>Data window</span>
+          <strong id="data-window">—</strong>
+          <small id="query-time">Live query pending</small>
+        </div>
+      </section>
+
+      <section class="kpi-grid" aria-label="Headline receiving metrics">
+        <article class="kpi-card primary-kpi">
+          <div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Received units</h3></div>
+          <strong id="kpi-receiving" class="kpi-value">—</strong>
+          <p id="kpi-receiving-note">Selected period</p>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-title-row"><span class="kpi-icon sales" aria-hidden="true">↗</span><h3>Sold units</h3></div>
+          <strong id="kpi-sales" class="kpi-value">—</strong>
+          <p id="kpi-sales-note">Invoiced sales</p>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-title-row"><span class="kpi-icon balance" aria-hidden="true">±</span><h3>Receipt balance</h3></div>
+          <strong id="kpi-gap" class="kpi-value">—</strong>
+          <p id="kpi-gap-note">Received minus sold</p>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-title-row"><span class="kpi-icon inventory" aria-hidden="true">□</span><h3>Inventory</h3></div>
+          <strong id="kpi-inventory" class="kpi-value">—</strong>
+          <p id="kpi-inventory-note">Total inventory units</p>
+        </article>
+        <article class="kpi-card risk-kpi">
+          <div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div>
+          <strong id="kpi-over-value" class="kpi-value">—</strong>
+          <p id="kpi-over-value-note">Source-calculated exposure</p>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-title-row"><span class="kpi-icon outlets" aria-hidden="true">◎</span><h3>Active outlets</h3></div>
+          <strong id="kpi-outlets" class="kpi-value">—</strong>
+          <p id="kpi-outlets-note">Latest stock above zero</p>
+        </article>
+      </section>
+
+      <section class="support-strip" aria-label="Supporting operational metrics">
+        <div class="support-metric"><span>Stock cover</span><strong id="stock-days">—</strong><small>days</small></div>
+        <div class="support-metric"><span>Over-receiving rate</span><strong id="over-rate">—</strong><small id="over-incidents">— incidents</small></div>
+        <div class="support-metric"><span>Under-receiving rate</span><strong id="under-rate">—</strong><small id="under-incidents">— incidents</small></div>
+        <div class="support-metric"><span>Closing stock</span><strong id="latest-stock">—</strong><small>latest dated stock</small></div>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel trend-panel">
+          <header class="panel-header">
+            <div><span class="section-kicker">FLOW TREND</span><h2>Receiving versus sales</h2><p>Daily units; use the gap to spot inventory build or drawdown.</p></div>
+            <div class="legend" aria-label="Chart legend"><span><i class="legend-line receiving"></i>Receiving</span><span><i class="legend-line sales"></i>Sales</span></div>
+          </header>
+          <div id="trend-chart" class="chart-frame chart-skeleton" aria-live="polite"></div>
+        </article>
+
+        <article class="panel focus-panel">
+          <header class="panel-header"><div><span class="section-kicker">MANAGEMENT FOCUS</span><h2>What needs attention</h2><p>Signals derived from the selected live view.</p></div></header>
+          <ol id="management-signals" class="signal-list"><li class="signal-skeleton"></li><li class="signal-skeleton"></li><li class="signal-skeleton"></li></ol>
+        </article>
+
+        <article class="panel category-panel">
+          <header class="panel-header"><div><span class="section-kicker">CATEGORY MIX</span><h2>Receipt balance by category</h2><p>Received minus sold units. Right builds inventory; left draws it down.</p></div></header>
+          <div id="category-chart" class="chart-frame chart-skeleton" aria-live="polite"></div>
+        </article>
+
+        <article class="panel region-panel">
+          <header class="panel-header"><div><span class="section-kicker">DIVISION CONTROL</span><h2>Where exposure is concentrated</h2><p>Unit and incident totals reconcile; value is recalculated by Power BI for each division.</p></div></header>
+          <div class="table-scroll">
+            <table class="executive-table">
+              <thead><tr><th scope="col">Division</th><th scope="col" class="numeric">Received</th><th scope="col" class="numeric">Sold</th><th scope="col" class="numeric">Balance</th><th scope="col" class="numeric">Over value</th><th scope="col" class="numeric">Incidents</th><th scope="col">Position</th></tr></thead>
+              <tbody id="region-table-body"><tr><td colspan="7" class="empty-cell">Loading division view…</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+    </section>
+
+    <section id="exceptions-view" class="dashboard-view" role="tabpanel" aria-labelledby="exceptions-tab" hidden>
+      <div class="exceptions-head">
+        <div><span class="section-kicker">OUTLET ACTION QUEUE</span><h2>Prioritise exceptions, not pages of detail</h2><p id="exceptions-description">Outlets ranked by over-receiving value for the selected scope.</p></div>
+        <div class="exception-tools">
+          <div class="segmented-control" role="group" aria-label="Exception ranking">
+            <button class="focus-button is-active" type="button" data-focus="over">Over receiving</button>
+            <button class="focus-button" type="button" data-focus="under">Under receiving</button>
+            <button class="focus-button" type="button" data-focus="stock">Stock cover</button>
+          </div>
+          <label class="search-field"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span class="sr-only">Search outlets</span><input id="outlet-search" type="search" placeholder="Search outlet, code or division"></label>
+        </div>
+      </div>
+
+      <section id="exception-summary" class="exception-summary" aria-label="Top outlet exceptions"></section>
+
+      <article class="panel outlet-panel">
+        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Showing the first 25 ranked outlets.</p></div><span id="outlet-result-count" class="result-count">—</span></header>
+        <div class="table-scroll wide-table">
+          <table class="executive-table outlet-table">
+            <thead><tr><th scope="col">#</th><th scope="col">Outlet</th><th scope="col">Division</th><th scope="col" class="numeric">Received</th><th scope="col" class="numeric">Sold</th><th scope="col" class="numeric">Balance</th><th scope="col" class="numeric">Stock days</th><th scope="col" class="numeric">Over value</th><th scope="col" class="numeric">Over incidents</th><th scope="col" class="numeric">Under incidents</th></tr></thead>
+            <tbody id="outlet-table-body"><tr><td colspan="10" class="empty-cell">Loading outlet exceptions…</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
   </main>
 
-  <script src="./app.js?v=20260908-1"></script>
+  <footer class="dashboard-footer"><span>Live read-only view of the published Power BI model</span><span>Auto-refresh every 15 minutes · Times shown in Bangladesh Standard Time</span></footer>
+
+  <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
+
+  <script type="module" src="./app.js?v=20260908-2"></script>
 </body>
 </html>
