@@ -241,6 +241,9 @@ function createQuery(select, from, where, count = 1200) {
 }
 
 function commonWhere(range, scope, filters = {}, excluded = new Set()) {
+  const movementTypes = filters.movementCode && filters.movementCode !== "all"
+    ? [filters.movementCode]
+    : scope.movementTypes;
   const conditions = [
     {
       Condition: {
@@ -266,11 +269,13 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
       Condition: {
         In: {
           Expressions: [field("r", "movement_type")],
-          Values: scope.movementTypes.map(value => [literal(stringLiteral(value))]),
+          Values: movementTypes.map(value => [literal(stringLiteral(value))]),
         },
       },
     },
   ];
+
+  if (excluded.has("movement")) conditions.splice(1, 1);
 
   const masterCategory = filters.masterCategory || scope.masterCategory;
   if (!excluded.has("masterCategory") && masterCategory !== "all") {
@@ -329,6 +334,18 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
     });
   }
 
+
+  if (!excluded.has("user") && filters.userCode && filters.userCode !== "all") {
+    conditions.push({
+      Condition: {
+        In: {
+          Expressions: [field("u", "created_by")],
+          Values: [[literal(stringLiteral(filters.userCode))]],
+        },
+      },
+    });
+  }
+
   return conditions;
 }
 
@@ -340,6 +357,20 @@ const COMMON_FROM = [
   { Name: "d", Entity: "DimDate", Type: 0 },
   { Name: "a", Entity: "DimArticle", Type: 0 },
 ];
+
+const USER_SOURCE = { Name: "u", Entity: "Query4", Type: 0 };
+const MANAGEMENT_FROM = [
+  ...COMMON_FROM,
+  USER_SOURCE,
+  { Name: "q2", Entity: "Query2", Type: 0 },
+  { Name: "g", Entity: "Group Name", Type: 0 },
+  { Name: "rank", Entity: "Over Receiving Rank Measures", Type: 0 },
+  { Name: "vis", Entity: "For Visula", Type: 0 },
+];
+
+function sourceSet(filters, includeUser = false) {
+  return includeUser || (filters.userCode && filters.userCode !== "all") ? [...COMMON_FROM, USER_SOURCE] : COMMON_FROM;
+}
 
 const KPI_SELECT = [
   sum("s", "ActualInvoicedQuantity", "Sales"),
@@ -354,6 +385,43 @@ const KPI_SELECT = [
   measure("m", "Over Receiving Value", "OverValue"),
   measure("o", "Outlets with Latest Stock > 0", "ActiveOutlets"),
 ];
+
+function composeKpiContexts(rows, fallback = {}) {
+  const numeric = value => value == null || value === "" ? null : (Number.isFinite(Number(value)) ? Number(value) : null);
+  const sumPresent = fieldName => {
+    const values = rows.map(row => numeric(row[fieldName])).filter(value => value != null);
+    return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  };
+  const preferSource = (fieldName, computed) => numeric(fallback[fieldName]) ?? computed;
+  const compositeSales = sumPresent("Sales");
+  const weightedStockDays = rows.reduce((total, row) => {
+    const rowSales = numeric(row.Sales);
+    const stockDay = numeric(row.StockDay);
+    return total + (rowSales != null && stockDay != null ? rowSales * stockDay : 0);
+  }, 0);
+  const incidentRate = (incidentField, percentField) => {
+    const incidents = sumPresent(incidentField);
+    const population = rows.reduce((total, row) => {
+      const count = numeric(row[incidentField]);
+      const percent = numeric(row[percentField]);
+      return total + (count != null && percent > 0 ? count / (percent / 100) : 0);
+    }, 0);
+    return incidents != null && population ? (incidents / population) * 100 : null;
+  };
+  return {
+    Sales: preferSource("Sales", compositeSales),
+    Receiving: preferSource("Receiving", sumPresent("Receiving")),
+    Inventory: preferSource("Inventory", sumPresent("Inventory")),
+    StockDay: preferSource("StockDay", compositeSales ? weightedStockDays / compositeSales : null),
+    LatestStock: preferSource("LatestStock", sumPresent("LatestStock")),
+    OverIncidents: preferSource("OverIncidents", sumPresent("OverIncidents")),
+    OverIncidentPct: preferSource("OverIncidentPct", incidentRate("OverIncidents", "OverIncidentPct")),
+    UnderIncidents: preferSource("UnderIncidents", sumPresent("UnderIncidents")),
+    UnderIncidentPct: preferSource("UnderIncidentPct", incidentRate("UnderIncidents", "UnderIncidentPct")),
+    OverValue: preferSource("OverValue", sumPresent("OverValue")),
+    ActiveOutlets: numeric(fallback.ActiveOutlets),
+  };
+}
 
 function rangeForDays(scope, days) {
   const requestedDays = Number(days) || 30;
@@ -432,16 +500,20 @@ export class PowerBIDataClient {
     const categoryOptionWhere = commonWhere(range, this.scope, filters, new Set(["category", "article"]));
     const articleOptionWhere = commonWhere(range, this.scope, filters, new Set(["article"]));
     const outletOptionWhere = commonWhere(range, this.scope, filters, new Set(["region", "outlet"]));
+    const userOptionWhere = commonWhere(range, this.scope, filters, new Set(["user"]));
+    const movementOptionWhere = commonWhere(range, this.scope, filters, new Set(["movement"]));
+    const from = sourceSet(filters);
+    const userFrom = sourceSet(filters, true);
 
     const specs = [
-      { key: "kpis", query: createQuery(KPI_SELECT, COMMON_FROM, where, 50) },
+      { key: "kpis", query: createQuery(KPI_SELECT, from, where, 50) },
       {
         key: "trend",
         query: createQuery([
           column("d", "Date", "Date"),
           sum("s", "ActualInvoicedQuantity", "Sales"),
           sum("r", "qty_in_unit_of_entry", "Receiving"),
-        ], COMMON_FROM, where, 500),
+        ], from, where, 500),
       },
       {
         key: "categories",
@@ -453,7 +525,7 @@ export class PowerBIDataClient {
           measure("m", "Over Receiving Value", "OverValue"),
           measure("m", "Over Receiving Incidents", "OverIncidents"),
           measure("m", "Under Receiving Incidents", "UnderIncidents"),
-        ], COMMON_FROM, where, 500),
+        ], from, where, 500),
       },
       {
         key: "regions",
@@ -465,7 +537,7 @@ export class PowerBIDataClient {
           measure("m", "Over Receiving Value", "OverValue"),
           measure("m", "Over Receiving Incidents", "OverIncidents"),
           measure("m", "Under Receiving Incidents", "UnderIncidents"),
-        ], COMMON_FROM, where, 100),
+        ], from, where, 100),
       },
       {
         key: "outlets",
@@ -480,11 +552,11 @@ export class PowerBIDataClient {
           measure("m", "Over Receiving Value", "OverValue"),
           measure("m", "Over Receiving Incidents", "OverIncidents"),
           measure("m", "Under Receiving Incidents", "UnderIncidents"),
-        ], COMMON_FROM, where, 5000),
+        ], from, where, 5000),
       },
       {
         key: "categoryOptions",
-        query: createQuery([column("a", "Category3", "Category")], COMMON_FROM, categoryOptionWhere, 1000),
+        query: createQuery([column("a", "Category3", "Category")], from, categoryOptionWhere, 1000),
       },
       {
         key: "articleOptions",
@@ -492,7 +564,7 @@ export class PowerBIDataClient {
           column("a", "ArticleNo", "ArticleNo"),
           column("a", "ArticleName", "ArticleName"),
           column("a", "Category3", "Category"),
-        ], COMMON_FROM, articleOptionWhere, 8000),
+        ], from, articleOptionWhere, 8000),
       },
       {
         key: "outletOptions",
@@ -500,16 +572,43 @@ export class PowerBIDataClient {
           column("o", "OutletCode", "OutletCode"),
           column("o", "OutletName", "Outlet"),
           column("o", "RegionName", "Region"),
-        ], COMMON_FROM, outletOptionWhere, 5000),
+        ], from, outletOptionWhere, 5000),
+      },
+      {
+        key: "userOptions",
+        query: createQuery([column("u", "created_by", "UserCode")], userFrom, userOptionWhere, 3000),
+      },
+      {
+        key: "movementOptions",
+        query: createQuery([column("r", "movement_type", "MovementCode")], from, movementOptionWhere, 100),
       },
     ];
 
-    const requestedSpecs = section === "core" ? specs.slice(0, 4)
+    let requestedSpecs = section === "core" ? specs.slice(0, 4)
       : section === "supporting" ? specs.slice(4)
         : section === "outlets" ? [specs[4]]
+          : section === "kpiOutlets" ? [specs[0], specs[4]]
           : section === "options" ? specs.slice(5)
             : specs;
+    const needsCompositeKpi = filters.masterCategory === "all" && (section === "core" || section === "all");
+    const compositeKeys = [];
+    if (needsCompositeKpi) {
+      const compositeSpecs = this.scope.masterCategories.map((masterCategory, index) => {
+        const key = `compositeKpi${index}`;
+        compositeKeys.push(key);
+        return {
+          key,
+          query: createQuery(KPI_SELECT, from, commonWhere(range, this.scope, { ...filters, masterCategory }), 50),
+        };
+      });
+      requestedSpecs = [...requestedSpecs, ...compositeSpecs];
+    }
     const { decoded, queryTimestamp } = await this.runSpecs(requestedSpecs);
+    if (needsCompositeKpi) {
+      const rows = compositeKeys.flatMap(key => decoded[key] || []);
+      decoded.kpis = [composeKpiContexts(rows, decoded.kpis?.[0] || {})];
+      compositeKeys.forEach(key => delete decoded[key]);
+    }
 
     return {
       ...decoded,
@@ -524,6 +623,7 @@ export class PowerBIDataClient {
     if (!this.model || !this.report || !this.scope) await this.connect();
     const range = rangeForDays(this.scope, filters.days);
     const where = commonWhere(range, this.scope, filters);
+    const from = sourceSet(filters);
     const metricColumns = {
       Receiving: [sum("r", "qty_in_unit_of_entry", "Receiving")],
       Sales: [sum("s", "ActualInvoicedQuantity", "Sales")],
@@ -550,9 +650,44 @@ export class PowerBIDataClient {
         column("a", "MasterCategory", "MasterCategory"),
         column("a", "Category3", "Category"),
         ...selectedMetrics,
-      ], COMMON_FROM, where, 5000),
+      ], from, where, 5000),
     }];
     const { decoded, queryTimestamp } = await this.runSpecs(specs);
     return { rows: decoded.articles, range, queryTimestamp };
+  }
+
+  async loadManagementTable(filters = {}, tableNumber = 1) {
+    if (!this.model || !this.report || !this.scope) await this.connect();
+    const range = rangeForDays(this.scope, filters.days);
+    const where = commonWhere(range, this.scope, filters);
+    const common = [
+      measure("m", "Opening Stock", "OpeningStock"),
+      sum("r", "qty_in_unit_of_entry", "Receiving"),
+      measure("m", "Total Inventory", "TotalInventory"),
+      sum("s", "ActualInvoicedQuantity", "TotalSales"),
+      measure("m", "STD. Stock Days", "StdStockDays"),
+    ];
+    const operational = [
+      ...common,
+      measure("m", "Stock Day", "CurrentStockDay"),
+      measure("q2", "Latest Stock", "CurrentStockSystem"),
+      measure("m", "Closing Stock On Receiving", "ClosingStockReceiving"),
+      measure("m", "Over Receiving", "OverReceiving"),
+      measure("m", "Over Receiving Value", "OverValue"),
+      measure("rank", "Over Receiving Score", "OverScore"),
+      measure("vis", "Over Receiving Score Icon", "StatusIcon"),
+    ];
+    const definitions = {
+      1: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("a", "ArticleNo", "ArticleNo"), column("a", "ArticleName", "ArticleName"), column("a", "Category3", "Category"), ...operational, measure("rank", "sorting", "Sorting")],
+      2: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("g", "Article Combo", "ArticleCombo"), ...operational, measure("rank", "sorting", "Sorting")],
+      3: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), ...operational, measure("rank", "sorting", "Sorting")],
+      4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), measure("m", "Over Receiving", "OverReceiving"), measure("m", "Over Receiving Value", "OverValue"), measure("rank", "Over Receiving Score", "OverScore"), measure("vis", "Over Receiving Score Icon", "StatusIcon"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct")],
+      5: [column("a", "ArticleNo", "ArticleNo"), column("r", "PO Clean", "PONumber"), column("r", "movement_type", "MovementType"), column("u", "created_by", "CreatedBy"), column("u", "document_date", "PODate"), column("r", "posting_date", "ReceivingDate"), sum("r", "qty_in_unit_of_entry", "Receiving")],
+    };
+    const table = Number(tableNumber) || 1;
+    const select = definitions[table] || definitions[1];
+    const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, table === 5 ? 8000 : 5000) }];
+    const { decoded, queryTimestamp } = await this.runSpecs(specs);
+    return { rows: decoded.rows, range, queryTimestamp };
   }
 }

@@ -1,11 +1,12 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-2";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-2";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-3";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-3";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v1";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v2";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = 400;
+const DATALIST_RENDER_LIMIT = 250;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
   masterCategory: "all",
@@ -15,11 +16,14 @@ const DEFAULT_FILTERS = Object.freeze({
   zonal: "all",
   outletCode: "all",
   articleNo: "all",
+  userCode: "all",
+  movementCode: "all",
 });
 
 const nf = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 });
 const compactNf = new Intl.NumberFormat("en-GB", { notation: "compact", maximumFractionDigits: 1 });
 const percentNf = new Intl.NumberFormat("en-GB", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const longDateNf = new Intl.DateTimeFormat("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
 
 const state = {
   client: new PowerBIDataClient(),
@@ -34,6 +38,8 @@ const state = {
   zonalSuggestions: [],
   outletSuggestions: [],
   articleSuggestions: [],
+  userSuggestions: [],
+  movementSuggestions: [],
   sorts: {
     region: { key: "OverValue", direction: "desc" },
     outlet: { key: "OverValue", direction: "desc" },
@@ -44,6 +50,9 @@ const state = {
   detailCache: new Map(),
   detailMetric: "OverValue",
   detailContext: null,
+  detailTableNumber: 1,
+  detailDrillValue: null,
+  detailRowFilters: {},
   detailSearch: "",
   loadSequence: 0,
   detailSequence: 0,
@@ -73,8 +82,12 @@ const dom = {
   zonalOptions: el("zonal-options"),
   outletFilter: el("outlet-filter"),
   articleFilter: el("article-filter"),
+  userFilter: el("user-filter"),
+  movementFilter: el("movement-filter"),
   outletOptions: el("outlet-options"),
   articleOptions: el("article-options"),
+  userOptions: el("user-options"),
+  movementOptions: el("movement-options"),
   cascadeNote: el("cascade-note"),
   organizationStatus: el("organization-status"),
   activeFilterSummary: el("active-filter-summary"),
@@ -99,9 +112,10 @@ const dom = {
   detailContent: el("detail-content"),
   detailSummary: el("detail-summary"),
   detailSearch: el("detail-search"),
+  detailTabs: el("management-table-tabs"),
+  detailMeasureNote: el("detail-measure-note"),
   detailHead: el("detail-table-head"),
   detailTable: el("detail-table-body"),
-  selectedArticle: el("selected-article-detail"),
 };
 
 el("open-powerbi").href = POWER_BI_URL;
@@ -117,6 +131,7 @@ function escapeHtml(value) {
 }
 
 function finite(value) {
+  if (value == null || (typeof value === "string" && !value.trim())) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -159,6 +174,11 @@ function toDate(value) {
   const numeric = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
   const date = new Date(numeric);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function longDate(value) {
+  const date = toDate(value);
+  return date ? longDateNf.format(date) : "—";
 }
 
 function endInclusive(endExclusive) {
@@ -258,14 +278,22 @@ function addSelectOptions(select, values, allLabel, selected) {
   select.value = selected;
 }
 
-function fillDatalist(datalist, values) {
+function fillDatalist(datalist, values, limit = DATALIST_RENDER_LIMIT) {
   const fragment = document.createDocumentFragment();
-  values.forEach(value => {
+  values.slice(0, limit).forEach(value => {
     const option = document.createElement("option");
     option.value = value;
     fragment.append(option);
   });
   datalist.replaceChildren(fragment);
+}
+
+function refreshSearchDatalist(datalist, suggestions, query = "") {
+  const needle = query.trim().toLocaleLowerCase();
+  const matches = needle
+    ? suggestions.filter(value => value.toLocaleLowerCase().includes(needle))
+    : suggestions;
+  fillDatalist(datalist, matches);
 }
 
 function organizationForCode(code) {
@@ -329,6 +357,8 @@ function buildPowerBIFilters() {
     masterCategory: state.filters.masterCategory,
     category: state.filters.category,
     articleNo: state.filters.articleNo,
+    userCode: state.filters.userCode,
+    movementCode: state.filters.movementCode,
     region: "all",
   };
 
@@ -366,6 +396,8 @@ function updateCascadingOptions() {
   const categoryOptions = state.data.categoryOptions || [];
   const outletOptions = state.data.outletOptions || [];
   const articleOptions = state.data.articleOptions || [];
+  const userOptions = state.data.userOptions || [];
+  const movementOptions = state.data.movementOptions || [];
   const masterCategories = state.data.scope?.masterCategories?.length
     ? state.data.scope.masterCategories
     : ["COMPANY GOODS", "FRESH PRODUCE", "GENERAL MERCHANDISE", "LIFESTYLE", "LOOSE COMMODITY", "PACKED COMMODITY"];
@@ -419,9 +451,15 @@ function updateCascadingOptions() {
     .filter(row => row.ArticleNo && !seenArticles.has(String(row.ArticleNo)) && seenArticles.add(String(row.ArticleNo)))
     .map(row => `${row.ArticleNo} — ${row.ArticleName || "Unnamed article"}`);
   fillDatalist(dom.articleOptions, state.articleSuggestions);
+  state.userSuggestions = uniqueSorted(userOptions.map(row => row.UserCode));
+  state.movementSuggestions = uniqueSorted(movementOptions.map(row => row.MovementCode));
+  fillDatalist(dom.userOptions, state.userSuggestions);
+  fillDatalist(dom.movementOptions, state.movementSuggestions);
 
   dom.outletFilter.value = state.filters.outletCode === "all" ? "" : canonicalOutletLabel(state.filters.outletCode);
   dom.articleFilter.value = state.filters.articleNo === "all" ? "" : canonicalArticleLabel(state.filters.articleNo);
+  dom.userFilter.value = state.filters.userCode === "all" ? "" : state.filters.userCode;
+  dom.movementFilter.value = state.filters.movementCode === "all" ? "" : state.filters.movementCode;
   updateActiveFilterSummary();
 }
 
@@ -434,6 +472,8 @@ function activeFilterLabels() {
   if (state.filters.zonal !== "all") labels.push(`Zonal: ${state.filters.zonal}`);
   if (state.filters.outletCode !== "all") labels.push(`Outlet: ${state.filters.outletCode}`);
   if (state.filters.articleNo !== "all") labels.push(`Article: ${state.filters.articleNo}`);
+  if (state.filters.userCode !== "all") labels.push(`User: ${state.filters.userCode}`);
+  if (state.filters.movementCode !== "all") labels.push(`Movement: ${state.filters.movementCode}`);
   return labels;
 }
 
@@ -448,7 +488,7 @@ function setLoading(loading) {
   dom.loadingBar.classList.toggle("is-active", loading);
   dom.refreshButton.disabled = loading;
   dom.refreshButton.classList.toggle("is-refreshing", loading);
-  [dom.periodFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.resetButton]
+  [dom.periodFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
 
   if (loading) {
@@ -639,35 +679,96 @@ const sortLabels = {
   Region: "division", Outlet: "outlet", RHO: "RHO", Zonal: "Zonal", ArticleNo: "article code", ArticleName: "article name",
   MasterCategory: "business division", Category: "category", Receiving: "received", Sales: "sold", Gap: "balance",
   Inventory: "inventory", StockDay: "stock days", OverValue: "over value", OverIncidents: "over incidents",
-  UnderIncidents: "under incidents", Incidents: "incidents", Position: "position",
+  OverIncidentPct: "over-receiving rate", UnderIncidents: "under incidents", UnderIncidentPct: "under-receiving rate",
+  Incidents: "incidents", Position: "position", LatestStock: "closing stock", ActiveOutlets: "active outlets", OutletName: "outlet",
+  ArticleCombo: "article group", OpeningStock: "opening stock", TotalInventory: "total inventory", TotalSales: "total sales",
+  StdStockDays: "standard stock days", CurrentStockDay: "current stock day", CurrentStockSystem: "current stock in system",
+  ClosingStockReceiving: "closing stock on receiving", OverReceiving: "over receiving", OverScore: "over receiving score",
+  StatusIcon: "status", Sorting: "sorting", EstimatedClosingStock: "estimated closing stock", OverIncidentPct: "incident percent",
+  PONumber: "PO number", MovementType: "movement type", CreatedBy: "user ID", PODate: "PO date", ReceivingDate: "receiving date",
 };
 
-const detailFieldDefinitions = {
-  ArticleNo: { label: "Article code", numeric: false, format: value => value ?? "" },
-  ArticleName: { label: "Article name", numeric: false, format: value => value ?? "" },
-  MasterCategory: { label: "Business division", numeric: false, format: value => value ?? "" },
-  Category: { label: "Category", numeric: false, format: value => value ?? "" },
-  Receiving: { label: "Received", numeric: true, format: exact },
-  Sales: { label: "Sold", numeric: true, format: exact },
-  Gap: { label: "Balance", numeric: true, format: exact },
-  Inventory: { label: "Inventory", numeric: true, format: exact },
-  StockDay: { label: "Stock days", numeric: true, format: value => finite(value) == null ? "" : Number(value).toFixed(1) },
-  OverValue: { label: "Over value", numeric: true, format: value => finite(value) == null ? "" : Number(value).toFixed(2) },
-  OverIncidents: { label: "Over incidents", numeric: true, format: exact },
-  UnderIncidents: { label: "Under incidents", numeric: true, format: exact },
-  Incidents: { label: "Total incidents", numeric: true, format: exact },
-};
+const operationalManagementColumns = [
+  { key: "OpeningStock", label: "Opening Stock", numeric: true },
+  { key: "Receiving", label: "Receiving Qty", numeric: true },
+  { key: "TotalInventory", label: "Total Inventory", numeric: true },
+  { key: "TotalSales", label: "Total Sales Qty", numeric: true },
+  { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
+  { key: "CurrentStockDay", label: "Current Stock Day", numeric: true, decimals: 2 },
+  { key: "CurrentStockSystem", label: "Current Stock in System", numeric: true },
+  { key: "ClosingStockReceiving", label: "Closing Stock On Receiving", numeric: true },
+  { key: "OverReceiving", label: "Over Receiving", numeric: true },
+  { key: "OverValue", label: "Over Receiving Value", numeric: true },
+  { key: "OverScore", label: "Over Receiving Score", numeric: true, decimals: 2 },
+  { key: "StatusIcon", label: ".", status: true },
+];
 
-function columnsForDetailMetric(metric) {
-  const metricFields = metric === "Gap"
-    ? ["Receiving", "Sales", "Gap"]
-    : metric === "Incidents"
-      ? ["OverIncidents", "UnderIncidents", "Incidents"]
-      : [metric];
-  return ["ArticleNo", "ArticleName", "MasterCategory", "Category", ...metricFields]
-    .map(key => ({ key, ...detailFieldDefinitions[key] }))
-    .filter(column => column.label);
-}
+const managementTableDefinitions = {
+  1: {
+    title: "Table 1 – Over Receiving Incidents By Article",
+    defaultSort: "OverValue",
+    columns: [
+      { key: "OutletName", label: "OutletName" },
+      { key: "ArticleNo", label: "Article No" },
+      { key: "ArticleName", label: "ArticleName" },
+      { key: "Category", label: "Category" },
+      ...operationalManagementColumns,
+      { key: "Sorting", label: "sorting", numeric: true },
+    ],
+  },
+  2: {
+    title: "Table 2 – Over Receiving Incidents By Article-Group (For Loose Commodity & PnP)",
+    defaultSort: "OverValue",
+    columns: [
+      { key: "OutletName", label: "OutletName" },
+      { key: "ArticleCombo", label: "Article Combo" },
+      ...operationalManagementColumns,
+      { key: "Sorting", label: "sorting", numeric: true },
+    ],
+  },
+  3: {
+    title: "Table 3 – Over Receiving Incidents By Outlet",
+    defaultSort: "OverValue",
+    columns: [
+      { key: "OutletName", label: "OutletName" },
+      ...operationalManagementColumns,
+      { key: "Sorting", label: "sorting", numeric: true },
+    ],
+  },
+  4: {
+    title: "Table 4 – Over Receiving By Category",
+    defaultSort: "OverValue",
+    columns: [
+      { key: "Category", label: "Category3" },
+      { key: "OpeningStock", label: "Opening Stock", numeric: true },
+      { key: "Receiving", label: "Receiving Qty", numeric: true },
+      { key: "TotalInventory", label: "Total Inventory", numeric: true },
+      { key: "TotalSales", label: "Total Sales Qty", numeric: true },
+      { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
+      { key: "EstimatedClosingStock", label: "Est. Closing Stock", numeric: true },
+      { key: "OverReceiving", label: "Over Receiving", numeric: true },
+      { key: "OverValue", label: "Over Receiving Value", numeric: true },
+      { key: "OverScore", label: "Over Receiving Score", numeric: true, decimals: 2 },
+      { key: "StatusIcon", label: ".", status: true },
+      { key: "OverIncidents", label: "Over Receiving Incidents", numeric: true },
+      { key: "OverIncidentPct", label: "Over Receiving Incident%", numeric: true, decimals: 2 },
+    ],
+  },
+  5: {
+    title: "Table 5 – PO Detail Table",
+    defaultSort: "ReceivingDate",
+    defaultDirection: "desc",
+    columns: [
+      { key: "ArticleNo", label: "ArticleNo" },
+      { key: "PONumber", label: "PO Number" },
+      { key: "MovementType", label: "Movement Type" },
+      { key: "CreatedBy", label: "Created By (User ID)" },
+      { key: "PODate", label: "PO Date", date: true },
+      { key: "ReceivingDate", label: "Receiving Date", date: true },
+      { key: "Receiving", label: "Receiving Qty", numeric: true },
+    ],
+  },
+};
 
 function csvColumns(table) {
   if (table === "region") return [
@@ -760,7 +861,7 @@ function drillText(display, metric, contextType, contextValue, contextLabel, ext
 
 function drillNumber(display, rawValue, metric, contextType, contextValue, contextLabel, extraClass = "") {
   if (finite(rawValue) == null) return "—";
-  return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabels[metric] || metric)} details">${escapeHtml(display)}</button>`;
+  return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-drill-value="${escapeHtml(rawValue)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabels[metric] || metric)} details">${escapeHtml(display)}</button>`;
 }
 
 function renderRegions(rows) {
@@ -916,8 +1017,12 @@ function metricDefinition(metric) {
     StockDay: { title: "Stock cover", field: "StockDay", formatter: value => finite(value) == null ? "—" : `${Number(value).toFixed(1)} days` },
     OverValue: { title: "Over-receiving value", field: "OverValue", formatter: bdt },
     OverIncidents: { title: "Over-receiving incidents", field: "OverIncidents", formatter: exact },
+    OverIncidentPct: { title: "Over-receiving rate", field: "OverIncidentPct", formatter: percentage },
     UnderIncidents: { title: "Under-receiving incidents", field: "UnderIncidents", formatter: exact },
+    UnderIncidentPct: { title: "Under-receiving rate", field: "UnderIncidentPct", formatter: percentage },
     Incidents: { title: "Receiving incidents", field: "Incidents", formatter: exact },
+    ActiveOutlets: { title: "Active outlets", field: "ActiveOutlets", formatter: exact },
+    LatestStock: { title: "Closing stock", field: "LatestStock", formatter: exact },
   };
   return definitions[metric] || definitions.OverValue;
 }
@@ -946,68 +1051,119 @@ function openDialog() {
   if (!dom.detailDialog.open) dom.detailDialog.showModal();
 }
 
-function detailCacheKey(filters, metric) {
-  return JSON.stringify({ metric, filters });
+function detailCacheKey(filters, tableNumber) {
+  return JSON.stringify({ tableNumber, filters });
 }
 
-function prepareDetailRows(rows) {
-  return rows
-    .filter(row => row.ArticleNo)
-    .map(row => ({
-      ...row,
-      Gap: finite(row.Receiving) != null || finite(row.Sales) != null
-        ? (finite(row.Receiving) ?? 0) - (finite(row.Sales) ?? 0)
-        : null,
-      Incidents: finite(row.OverIncidents) != null || finite(row.UnderIncidents) != null
-        ? (finite(row.OverIncidents) ?? 0) + (finite(row.UnderIncidents) ?? 0)
-        : null,
-    }));
+function selectedMetricValue(metric, context) {
+  const valueFor = row => {
+    if (!row) return null;
+    if (metric === "Gap") {
+      const receiving = finite(row.Receiving);
+      const sales = finite(row.Sales);
+      return receiving == null && sales == null ? null : (receiving ?? 0) - (sales ?? 0);
+    }
+    if (metric === "Incidents") {
+      const over = finite(row.OverIncidents);
+      const under = finite(row.UnderIncidents);
+      return over == null && under == null ? null : (over ?? 0) + (under ?? 0);
+    }
+    return finite(row[metric]);
+  };
+  if (context?.type === "outlet") return valueFor((state.data.enrichedOutlets || []).find(row => normalizeOutletCode(row.OutletCode) === normalizeOutletCode(context.value)));
+  if (context?.type === "region") return valueFor((state.data.regions || []).find(row => String(row.Region ?? "__UNASSIGNED__") === String(context.value)));
+  if (context?.type === "category") return valueFor((state.data.categories || []).find(row => String(row.Category) === String(context.value)));
+  return valueFor(state.data.kpis?.[0]);
 }
 
-async function openDrill(metric, context = null) {
-  if (!state.data) return;
-  if (metric === "ActiveOutlets") {
-    state.exceptionFocus = "stock";
-    state.sorts.outlet = { key: "StockDay", direction: "desc" };
-    switchView("exceptions");
-    renderOutlets();
-    dom.exceptionsView.scrollIntoView({ behavior: "smooth", block: "start" });
-    return;
+function initialManagementTable(metric, context) {
+  if (context?.type === "category") return 4;
+  if (context?.type === "outlet") return 1;
+  if (context?.type === "region" || metric === "ActiveOutlets" || metric === "OverValue") return 3;
+  if (["OverIncidents", "OverIncidentPct", "Incidents"].includes(metric)) return 4;
+  return 1;
+}
+
+function detailScopeLabel() {
+  const labels = [];
+  if (state.detailContext?.label) labels.push(state.detailContext.label);
+  else if (state.filters.outletCode !== "all") labels.push(canonicalOutletLabel(state.filters.outletCode));
+  else if (state.filters.zonal !== "all") labels.push(state.filters.zonal);
+  else if (state.filters.rho !== "all") labels.push(state.filters.rho);
+  else if (state.filters.region !== "all") labels.push(state.filters.region);
+  else labels.push(state.filters.masterCategory === "all" ? "All business divisions" : "Current dashboard scope");
+
+  if (state.filters.masterCategory !== "all") labels.push(`Business division ${state.filters.masterCategory}`);
+  if (state.filters.category !== "all" && state.filters.category !== state.detailContext?.value) labels.push(state.filters.category);
+  if (state.filters.articleNo !== "all") labels.push(`Article ${state.filters.articleNo}`);
+  if (state.filters.userCode !== "all") labels.push(`User ${state.filters.userCode}`);
+  if (state.filters.movementCode !== "all") labels.push(`Movement ${state.filters.movementCode}`);
+  if (state.detailRowFilters.outletCodes?.length) labels.push(`Outlet ${state.detailRowFilters.outletCodes.join(", ")}`);
+  if (state.detailRowFilters.category) labels.push(state.detailRowFilters.category);
+  if (state.detailRowFilters.articleNo) labels.push(`Article ${state.detailRowFilters.articleNo}`);
+  if (state.detailRowFilters.userCode) labels.push(`User ${state.detailRowFilters.userCode}`);
+  if (state.detailRowFilters.movementCode) labels.push(`Movement ${state.detailRowFilters.movementCode}`);
+  return [...new Set(labels)].join(" · ");
+}
+
+function currentManagementFilters() {
+  const filters = detailFiltersForContext(state.detailContext);
+  const additions = state.detailRowFilters;
+  if (additions.outletCodes?.length) {
+    filters.region = "all";
+    filters.outletCodes = additions.outletCodes;
   }
+  for (const key of ["category", "articleNo", "userCode", "movementCode"]) {
+    if (additions[key]) filters[key] = additions[key];
+  }
+  return filters;
+}
 
+function configureManagementTable(tableNumber) {
+  const table = managementTableDefinitions[tableNumber] || managementTableDefinitions[1];
+  state.detailTableNumber = Number(tableNumber) || 1;
+  state.detailColumns = table.columns;
+  state.sorts.detail = { key: table.defaultSort, direction: table.defaultDirection || "desc" };
+  setText("detail-title", table.title);
+  setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
+  dom.detailSearch.placeholder = state.detailTableNumber === 5
+    ? "Search article, PO, movement, user or date"
+    : "Search any value in this management table";
+  dom.detailTabs.querySelectorAll("[data-management-table]").forEach(button => {
+    const active = Number(button.dataset.managementTable) === state.detailTableNumber;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  });
+}
+
+function normalizeManagementRows(rows) {
+  return (rows || []).map(row => {
+    const inferredCode = String(row.OutletName || "").match(/^([A-Za-z]\d{3,})\b/)?.[1] || "";
+    return { ...row, OutletCode: normalizeOutletCode(row.OutletCode || inferredCode) };
+  });
+}
+
+async function loadManagementTable(tableNumber, { preserveRowFilters = true } = {}) {
+  if (!preserveRowFilters) state.detailRowFilters = {};
+  configureManagementTable(tableNumber);
   const sequence = ++state.detailSequence;
-  const definition = metricDefinition(metric);
-  state.detailMetric = definition.field;
-  state.detailColumns = columnsForDetailMetric(definition.field);
-  state.detailContext = context;
-  state.detailSearch = "";
-  dom.detailSearch.value = "";
-  state.sorts.detail = { key: definition.field, direction: "desc" };
-  setText("detail-title", `${definition.title} details`);
-  const contextText = context?.label ? context.label : activeFilterLabels().join(" · ");
-  setText("detail-context", `${contextText} · ${dateRangeLabel(state.data.range)}`);
   dom.detailLoading.hidden = false;
   dom.detailError.hidden = true;
   dom.detailContent.hidden = true;
-  dom.selectedArticle.hidden = true;
-  openDialog();
 
   try {
-    const filters = detailFiltersForContext(context);
-    const cacheKey = detailCacheKey(filters, definition.field);
+    const filters = currentManagementFilters();
+    const cacheKey = detailCacheKey(filters, state.detailTableNumber);
     const cached = state.detailCache.get(cacheKey);
     if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
       state.detailRows = cached.rows;
-      dom.detailLoading.hidden = true;
-      dom.detailContent.hidden = false;
-      renderDetail();
-      return;
+    } else {
+      const result = await state.client.loadManagementTable(filters, state.detailTableNumber);
+      if (sequence !== state.detailSequence) return;
+      state.detailRows = normalizeManagementRows(result.rows);
+      state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
     }
-
-    const result = await state.client.loadArticleDetails(filters, definition.field);
     if (sequence !== state.detailSequence) return;
-    state.detailRows = prepareDetailRows(result.rows);
-    state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
     dom.detailLoading.hidden = true;
     dom.detailContent.hidden = false;
     renderDetail();
@@ -1015,34 +1171,36 @@ async function openDrill(metric, context = null) {
     if (sequence !== state.detailSequence) return;
     dom.detailLoading.hidden = true;
     dom.detailError.hidden = false;
-    dom.detailError.textContent = `${error?.message || "Article details could not be loaded."} Close this panel and try again.`;
+    dom.detailError.textContent = `${error?.message || "The management table could not be loaded."} Close this panel and try again.`;
   }
 }
 
-function detailScopeLabel() {
-  if (state.detailContext?.label) return state.detailContext.label;
-  if (state.filters.outletCode !== "all") return canonicalOutletLabel(state.filters.outletCode);
-  if (state.filters.zonal !== "all") return state.filters.zonal;
-  if (state.filters.rho !== "all") return state.filters.rho;
-  if (state.filters.region !== "all") return state.filters.region;
-  return "Current dashboard scope";
+async function openDrill(metric, context = null, rawValue = null) {
+  if (!state.data) return;
+  const definition = metricDefinition(metric);
+  state.detailMetric = metric;
+  state.detailContext = context;
+  state.detailDrillValue = finite(rawValue) ?? selectedMetricValue(metric, context);
+  state.detailRowFilters = {};
+  state.detailSearch = "";
+  dom.detailSearch.value = "";
+  openDialog();
+  await loadManagementTable(initialManagementTable(metric, context));
 }
 
 function renderDetailSummary(totalRows) {
   const definition = metricDefinition(state.detailMetric);
-  const contextOrganization = state.detailContext?.type === "outlet" ? organizationForCode(state.detailContext.value) : null;
+  const value = state.detailDrillValue == null ? "—" : definition.formatter(state.detailDrillValue);
   const cards = [
-    ["Article rows", exact(totalRows)],
+    [state.detailMetric === "OverValue" ? "Source DAX total" : "Clicked source value", value],
+    ["Returned rows", exact(totalRows)],
     ["Data window", dateRangeLabel(state.data.range)],
     ["Selected scope", detailScopeLabel()],
-    ["RHO / Zonal", contextOrganization ? `${contextOrganization.RHO} / ${contextOrganization.Zonal}` : `Sorted by ${definition.title}`],
   ];
-  dom.detailSummary.innerHTML = cards.map(([label, value]) => `<div class="detail-summary-card"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("");
-}
-
-function detailNumber(row, metric, display) {
-  if (finite(row[metric]) == null) return "—";
-  return `<button class="number-link" type="button" data-detail-article="${escapeHtml(row.ArticleNo)}" title="Show this article record">${escapeHtml(display)}</button>`;
+  dom.detailSummary.innerHTML = cards.map(([label, cardValue]) => `<div class="detail-summary-card"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(cardValue)}">${escapeHtml(cardValue)}</strong></div>`).join("");
+  dom.detailMeasureNote.innerHTML = state.detailMetric === "OverValue"
+    ? "<strong>Why totals can differ:</strong> Power BI’s Over Receiving Value is a context-sensitive DAX measure. This view preserves the selected source total exactly; outlet and article rows are drill-down values and are never added to replace it."
+    : "<strong>Calculation rule:</strong> the clicked Power BI value and every management row are queried in the same date and filter context; displayed rows are not used to recalculate the source headline.";
 }
 
 function applySort(table, key, additive = false) {
@@ -1065,25 +1223,54 @@ function applySort(table, key, additive = false) {
 }
 
 function renderDetailHeader() {
-  dom.detailHead.innerHTML = state.detailColumns.map(column => `<th scope="col"${column.numeric ? ' class="numeric"' : ""}><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)} <span></span></button></th>`).join("");
+  dom.detailHead.innerHTML = state.detailColumns.map(column => `<th scope="col" data-column-key="${escapeHtml(column.key)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)} <span></span></button></th>`).join("");
   dom.detailHead.querySelectorAll(".sort-button").forEach(button => {
     button.addEventListener("click", event => applySort("detail", button.dataset.sortKey, event.shiftKey));
   });
 }
 
-function detailDisplay(row, column) {
+function managementDisplay(row, column) {
   const value = row[column.key];
-  if (!column.numeric) return `<button class="text-link" type="button" data-detail-article="${escapeHtml(row.ArticleNo)}" title="Show this article record">${escapeHtml(value || (column.key === "ArticleName" ? "Unnamed article" : "—"))}</button>`;
-  const display = column.key === "Gap" ? signedCompact(value)
-    : column.key === "OverValue" ? bdt(value)
-      : column.key === "StockDay" ? (finite(value) == null ? "—" : Number(value).toFixed(1))
-        : compact(value);
-  return detailNumber(row, column.key, display);
+  if (column.date) return longDate(value);
+  if (column.status) return value || "—";
+  if (column.numeric) {
+    const number = finite(value);
+    if (number == null) return "—";
+    return column.decimals == null ? exact(number) : number.toLocaleString("en-GB", { minimumFractionDigits: column.decimals, maximumFractionDigits: column.decimals });
+  }
+  return value == null || value === "" ? "—" : String(value);
+}
+
+function managementAction(row, column) {
+  const table = state.detailTableNumber;
+  if (table === 1) {
+    if (column.key === "OutletName" && row.OutletCode) return { type: "outlet", value: row.OutletCode, label: row.OutletName };
+    if (column.key === "Category" && row.Category) return { type: "category", value: row.Category, label: row.Category };
+    if (row.ArticleNo) return { type: "article", value: row.ArticleNo, label: `${row.ArticleNo} — ${row.ArticleName || "Article"}`, outlet: row.OutletCode };
+  }
+  if ((table === 2 || table === 3) && row.OutletCode) return { type: "outlet", value: row.OutletCode, label: row.OutletName };
+  if (table === 4 && row.Category) return { type: "category", value: row.Category, label: row.Category };
+  if (table === 5) {
+    if (column.key === "ArticleNo" && row.ArticleNo) return { type: "article", value: row.ArticleNo, label: `Article ${row.ArticleNo}` };
+    if (column.key === "MovementType" && row.MovementType) return { type: "movement", value: row.MovementType, label: `Movement ${row.MovementType}` };
+    if (column.key === "CreatedBy" && row.CreatedBy) return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
+  }
+  return null;
+}
+
+function managementCell(row, column) {
+  const display = managementDisplay(row, column);
+  if (column.status) return `<span class="management-status-icon" title="Over-receiving score status">${escapeHtml(display)}</span>`;
+  const action = managementAction(row, column);
+  if (!action || display === "—") return escapeHtml(display);
+  const extra = action.outlet ? ` data-management-outlet="${escapeHtml(action.outlet)}"` : "";
+  const className = column.numeric ? "number-link" : "text-link";
+  return `<button class="${className} management-cell-link" type="button" data-management-action="${escapeHtml(action.type)}" data-management-value="${escapeHtml(action.value)}" data-management-label="${escapeHtml(action.label)}"${extra} title="Open linked management detail">${escapeHtml(display)}</button>`;
 }
 
 function renderDetail() {
   const query = state.detailSearch.trim().toLocaleLowerCase();
-  const filtered = state.detailRows.filter(row => !query || [row.ArticleNo, row.ArticleName, row.MasterCategory, row.Category, detailScopeLabel()]
+  const filtered = state.detailRows.filter(row => !query || [row.OutletCode, ...state.detailColumns.map(column => managementDisplay(row, column))]
     .some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
   const sorted = sortRows(filtered, "detail");
   const visible = sorted.slice(0, DETAIL_ROW_LIMIT);
@@ -1092,29 +1279,14 @@ function renderDetail() {
   renderDetailHeader();
   updateSortIndicators("detail");
   renderDetailSummary(state.detailRows.length);
-  setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} article rows`);
+  setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} rows`);
 
   if (!visible.length) {
-    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">No article rows match the current detail search.</td></tr>`;
+    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">No rows match the current management-table scope and search.</td></tr>`;
     return;
   }
 
-  dom.detailTable.innerHTML = visible.map(row => `<tr>${state.detailColumns.map(column => `<td${column.numeric ? ' class="numeric"' : ""}>${detailDisplay(row, column)}</td>`).join("")}</tr>`).join("");
-}
-
-function showArticleRecord(articleNo) {
-  const row = state.detailRows.find(item => String(item.ArticleNo) === String(articleNo));
-  if (!row) return;
-  const contextOrganization = state.detailContext?.type === "outlet" ? organizationForCode(state.detailContext.value) : null;
-  const metricFields = state.detailColumns.filter(column => column.numeric).map(column => [column.label, column.key === "OverValue" ? bdt(row[column.key]) : column.key === "Gap" ? signedCompact(row[column.key]) : column.key === "StockDay" ? (finite(row[column.key]) == null ? "—" : Number(row[column.key]).toFixed(1)) : exact(row[column.key])]);
-  const fields = [
-    ["Article", `${row.ArticleNo} — ${row.ArticleName || "Unnamed"}`],
-    ["Selected scope", detailScopeLabel()],
-    ["RHO / Zonal", contextOrganization ? `${contextOrganization.RHO} / ${contextOrganization.Zonal}` : "Current filtered scope"],
-    ...metricFields,
-  ];
-  dom.selectedArticle.innerHTML = fields.map(([label, value]) => `<div class="record-field"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("");
-  dom.selectedArticle.hidden = false;
+  dom.detailTable.innerHTML = visible.map(row => `<tr>${state.detailColumns.map(column => `<td data-column-key="${escapeHtml(column.key)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}>${managementCell(row, column)}</td>`).join("")}</tr>`).join("");
 }
 
 async function loadDashboard({ refreshMetadata = false } = {}) {
@@ -1259,6 +1431,33 @@ function applyOrganizationSearch(type) {
   loadDashboard();
 }
 
+function applyCodeSearch(type) {
+  const isUser = type === "userCode";
+  const input = isUser ? dom.userFilter : dom.movementFilter;
+  const suggestions = isUser ? state.userSuggestions : state.movementSuggestions;
+  const value = input.value.trim();
+  if (!value) {
+    if (state.filters[type] !== "all") {
+      state.filters[type] = "all";
+      loadDashboard();
+    }
+    return;
+  }
+  const exact = suggestions.find(item => item.toLocaleLowerCase() === value.toLocaleLowerCase());
+  const partial = suggestions.filter(item => item.toLocaleLowerCase().includes(value.toLocaleLowerCase()));
+  const match = exact || (partial.length === 1 ? partial[0] : null);
+  if (!match) {
+    input.setAttribute("aria-invalid", "true");
+    dom.cascadeNote.textContent = `Select an exact ${isUser ? "user" : "movement"} code from the suggestions.`;
+    return;
+  }
+  input.removeAttribute("aria-invalid");
+  input.value = match;
+  state.filters[type] = match;
+  dom.cascadeNote.textContent = `Applying ${isUser ? "user" : "movement"} code ${match}.`;
+  loadDashboard();
+}
+
 function setTheme(theme) {
   const mode = theme === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = mode;
@@ -1302,7 +1501,7 @@ document.querySelectorAll("[data-export-table]").forEach(button => {
 dom.main.addEventListener("click", event => {
   const drill = event.target.closest("[data-drill-metric]");
   if (!drill) return;
-  openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null);
+  openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null, drill.dataset.drillValue);
 });
 
 dom.main.addEventListener("keydown", event => {
@@ -1310,12 +1509,39 @@ dom.main.addEventListener("keydown", event => {
   const drill = event.target.closest("[data-drill-metric]");
   if (!drill) return;
   event.preventDefault();
-  openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null);
+  openDrill(drill.dataset.drillMetric, drill.dataset.contextType ? { type: drill.dataset.contextType, value: drill.dataset.contextValue, label: drill.dataset.contextLabel } : null, drill.dataset.drillValue);
 });
 
 dom.detailDialog.addEventListener("click", event => {
-  const article = event.target.closest("[data-detail-article]");
-  if (article) showArticleRecord(article.dataset.detailArticle);
+  const tab = event.target.closest("[data-management-table]");
+  if (tab) {
+    state.detailSearch = "";
+    dom.detailSearch.value = "";
+    loadManagementTable(Number(tab.dataset.managementTable), { preserveRowFilters: false });
+    return;
+  }
+
+  const link = event.target.closest("[data-management-action]");
+  if (!link) return;
+  const value = link.dataset.managementValue;
+  state.detailSearch = "";
+  dom.detailSearch.value = "";
+  if (link.dataset.managementAction === "outlet") {
+    state.detailRowFilters = { outletCodes: [normalizeOutletCode(value)] };
+    loadManagementTable(1);
+  } else if (link.dataset.managementAction === "category") {
+    state.detailRowFilters = { category: value, articleNo: "all" };
+    loadManagementTable(1);
+  } else if (link.dataset.managementAction === "article") {
+    state.detailRowFilters = { articleNo: value, ...(link.dataset.managementOutlet ? { outletCodes: [normalizeOutletCode(link.dataset.managementOutlet)] } : {}) };
+    loadManagementTable(5);
+  } else if (link.dataset.managementAction === "user") {
+    state.detailRowFilters = { ...state.detailRowFilters, userCode: value };
+    loadManagementTable(5);
+  } else if (link.dataset.managementAction === "movement") {
+    state.detailRowFilters = { ...state.detailRowFilters, movementCode: value };
+    loadManagementTable(5);
+  }
 });
 
 dom.managementSignals.addEventListener("click", event => {
@@ -1379,9 +1605,27 @@ dom.regionFilter.addEventListener("change", event => {
     }
   });
   input.addEventListener("input", () => {
+    refreshSearchDatalist(type === "outlet" ? dom.outletOptions : dom.articleOptions, type === "outlet" ? state.outletSuggestions : state.articleSuggestions, input.value);
     if (!input.value && state.filters[type === "outlet" ? "outletCode" : "articleNo"] !== "all") applySearchSelection(type);
     else dom.cascadeNote.textContent = `Type an exact ${type} code/name, then press Enter or choose a suggestion.`;
   });
+  input.addEventListener("focus", () => refreshSearchDatalist(type === "outlet" ? dom.outletOptions : dom.articleOptions, type === "outlet" ? state.outletSuggestions : state.articleSuggestions, input.value));
+});
+
+[[dom.userFilter, "userCode"], [dom.movementFilter, "movementCode"]].forEach(([input, type]) => {
+  input.addEventListener("change", () => applyCodeSearch(type));
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applyCodeSearch(type);
+    }
+  });
+  input.addEventListener("input", () => {
+    refreshSearchDatalist(type === "userCode" ? dom.userOptions : dom.movementOptions, type === "userCode" ? state.userSuggestions : state.movementSuggestions, input.value);
+    if (!input.value && state.filters[type] !== "all") applyCodeSearch(type);
+    else dom.cascadeNote.textContent = `Type a ${type === "userCode" ? "user" : "movement"} code, then press Enter or choose a suggestion.`;
+  });
+  input.addEventListener("focus", () => refreshSearchDatalist(type === "userCode" ? dom.userOptions : dom.movementOptions, type === "userCode" ? state.userSuggestions : state.movementSuggestions, input.value));
 });
 
 dom.resetButton.addEventListener("click", () => {
@@ -1394,6 +1638,8 @@ dom.resetButton.addEventListener("click", () => {
   dom.zonalFilter.value = "";
   dom.outletFilter.value = "";
   dom.articleFilter.value = "";
+  dom.userFilter.value = "";
+  dom.movementFilter.value = "";
   dom.outletSearch.value = "";
   state.outletSearch = "";
   loadDashboard();
