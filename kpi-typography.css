@@ -1,0 +1,53 @@
+/* ---------------------------------------------------------------------------
+   kpi-typography.css
+   Additive override for Receiving Dashboard-Shwapno.
+   Load AFTER styles.css. Nothing in styles.css is edited or removed.
+
+   Targets the real elements in index.html:
+     .kpi-value    the six headline numbers (Received units, Sold units, ...)
+     .support-link the four support-strip numbers (Stock cover, rates, stock)
+--------------------------------------------------------------------------- */
+
+.kpi-value {
+  font-size: clamp(2.1rem, 3.4vw, 3rem) !important;
+  font-weight: 800 !important;
+  line-height: 1.04 !important;
+  letter-spacing: -0.025em !important;
+  /* equal-width digits so the six cards stay aligned as values change */
+  font-variant-numeric: tabular-nums !important;
+}
+
+.support-link {
+  font-size: clamp(1.65rem, 2.4vw, 2.15rem) !important;
+  font-weight: 800 !important;
+  line-height: 1.05 !important;
+  letter-spacing: -0.02em !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* The drill arrow is generated content on these buttons. Pin it in em units
+   so it stays a small marker instead of scaling up with the number. */
+.kpi-value::after,
+.support-link::after {
+  font-size: 0.5em !important;
+  vertical-align: super !important;
+}
+
+.kpi-value svg,
+.support-link svg {
+  width: 0.5em !important;
+  height: 0.5em !important;
+  vertical-align: super !important;
+}
+
+/* Keep the caption line ("Selected period", "Invoiced sales") light so the
+   enlarged number stays the focal point. */
+.kpi-card p {
+  font-weight: 400;
+}
+
+/* Narrow screens: shrink further so "৳22.5 L" never wraps inside a card. */
+@media (max-width: 640px) {
+  .kpi-value   { font-size: clamp(1.7rem, 7vw, 2.2rem) !important; }
+  .support-link { font-size: clamp(1.4rem, 6vw, 1.8rem) !important; }
+}
