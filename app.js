@@ -157,6 +157,19 @@ function signedCompact(value) {
   return `${number > 0 ? "+" : "−"}${compactNf.format(Math.abs(number))}`;
 }
 
+function signedExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  if (number === 0) return "0";
+  return `${number > 0 ? "+" : "−"}${nf.format(Math.abs(number))}`;
+}
+
+function bdtExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  return `${number < 0 ? "−" : ""}৳${nf.format(Math.abs(number))}`;
+}
+
 function percentage(value) {
   const number = finite(value);
   return number == null ? "—" : `${percentNf.format(number)}%`;
@@ -577,12 +590,12 @@ function renderPulse(kpi, data) {
   if (gap > 0) {
     label.classList.add("positive");
     label.textContent = "Inventory build";
-    setText("balance-headline", `${compact(Math.abs(gap))} more units received than sold`, `${exact(Math.abs(gap))} units`);
+    setText("balance-headline", `${exact(Math.abs(gap))} more units received than sold`, `${exact(Math.abs(gap))} units`);
     setText("balance-detail", sales ? `Receipts ran ${percentage(Math.abs(gapPct))} above sales in this data window.` : "Receipts were recorded while invoiced sales were zero in this data window.");
   } else if (gap < 0) {
     label.classList.add("negative");
     label.textContent = "Inventory drawdown";
-    setText("balance-headline", `${compact(Math.abs(gap))} more units sold than received`, `${exact(Math.abs(gap))} units`);
+    setText("balance-headline", `${exact(Math.abs(gap))} more units sold than received`, `${exact(Math.abs(gap))} units`);
     setText("balance-detail", `Sales ran ${percentage(Math.abs(gapPct))} above receipts in this data window.`);
   } else {
     label.classList.add("balanced");
@@ -608,11 +621,11 @@ function renderKpis(kpi, data) {
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
 
-  setKpi("kpi-receiving", received);
-  setKpi("kpi-sales", sales);
-  setKpi("kpi-gap", gap, signedCompact);
-  setKpi("kpi-inventory", kpi.Inventory);
-  setKpi("kpi-over-value", kpi.OverValue, bdt);
+  setKpi("kpi-receiving", received, exact);
+  setKpi("kpi-sales", sales, exact);
+  setKpi("kpi-gap", gap, signedExact);
+  setKpi("kpi-inventory", kpi.Inventory, exact);
+  setKpi("kpi-over-value", kpi.OverValue, bdtExact);
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
@@ -625,12 +638,12 @@ function renderKpis(kpi, data) {
   gapNode.classList.toggle("is-positive", (gap ?? 0) > 0);
   gapNode.classList.toggle("is-negative", (gap ?? 0) < 0);
 
-  setText("stock-days", finite(kpi.StockDay) == null ? "—" : Number(kpi.StockDay).toFixed(1));
+  setText("stock-days", finite(kpi.StockDay) == null ? "—" : nf.format(Math.round(Number(kpi.StockDay))));
   setText("over-rate", percentage(kpi.OverIncidentPct));
   setText("under-rate", percentage(kpi.UnderIncidentPct));
   setText("over-incidents", `${exact(kpi.OverIncidents)} incidents`);
   setText("under-incidents", `${exact(kpi.UnderIncidents)} incidents`);
-  setText("latest-stock", compact(kpi.LatestStock), exact(kpi.LatestStock));
+  setText("latest-stock", exact(kpi.LatestStock), exact(kpi.LatestStock));
 }
 
 function niceCeiling(value) {

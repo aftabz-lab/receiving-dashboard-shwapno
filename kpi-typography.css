@@ -3,30 +3,36 @@
    Additive override for Receiving Dashboard-Shwapno.
    Load AFTER styles.css. Nothing in styles.css is edited or removed.
 
-   Targets the real elements in index.html:
-     .kpi-value    the six headline numbers (Received units, Sold units, ...)
-     .support-link the four support-strip numbers (Stock cover, rates, stock)
+   Sized so a full comma-separated number fits on one line inside its card.
+   The longest case is the over-receiving value card, which carries the taka
+   sign plus eight digits and two commas, so it gets its own smaller step.
 --------------------------------------------------------------------------- */
 
 .kpi-value {
-  font-size: clamp(2.1rem, 3.4vw, 3rem) !important;
+  font-size: clamp(1.4rem, 2vw, 2.1rem) !important;
   font-weight: 800 !important;
-  line-height: 1.04 !important;
-  letter-spacing: -0.025em !important;
-  /* equal-width digits so the six cards stay aligned as values change */
+  line-height: 1.08 !important;
+  letter-spacing: -0.02em !important;
+  white-space: nowrap !important;
+  /* equal-width digits so the six cards stay visually aligned */
   font-variant-numeric: tabular-nums !important;
+}
+
+/* Over-receiving value is the longest string on the row. */
+.risk-kpi .kpi-value {
+  font-size: clamp(1.15rem, 1.65vw, 1.75rem) !important;
 }
 
 .support-link {
-  font-size: clamp(1.65rem, 2.4vw, 2.15rem) !important;
+  font-size: clamp(1.3rem, 1.8vw, 1.9rem) !important;
   font-weight: 800 !important;
-  line-height: 1.05 !important;
+  line-height: 1.08 !important;
   letter-spacing: -0.02em !important;
+  white-space: nowrap !important;
   font-variant-numeric: tabular-nums !important;
 }
 
-/* The drill arrow is generated content on these buttons. Pin it in em units
-   so it stays a small marker instead of scaling up with the number. */
+/* Keep the drill arrow a small marker rather than scaling with the number. */
 .kpi-value::after,
 .support-link::after {
   font-size: 0.5em !important;
@@ -40,14 +46,13 @@
   vertical-align: super !important;
 }
 
-/* Keep the caption line ("Selected period", "Invoiced sales") light so the
-   enlarged number stays the focal point. */
+/* Caption line stays light so the number remains the focal point. */
 .kpi-card p {
   font-weight: 400;
 }
 
-/* Narrow screens: shrink further so "৳22.5 L" never wraps inside a card. */
-@media (max-width: 640px) {
-  .kpi-value   { font-size: clamp(1.7rem, 7vw, 2.2rem) !important; }
-  .support-link { font-size: clamp(1.4rem, 6vw, 1.8rem) !important; }
+@media (max-width: 900px) {
+  .kpi-value        { font-size: clamp(1.3rem, 3.4vw, 1.8rem) !important; }
+  .risk-kpi .kpi-value { font-size: clamp(1.1rem, 2.9vw, 1.5rem) !important; }
+  .support-link     { font-size: clamp(1.2rem, 3vw, 1.6rem) !important; }
 }
