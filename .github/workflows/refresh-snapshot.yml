@@ -1,0 +1,48 @@
+name: Refresh snapshot
+
+on:
+  schedule:
+    - cron: "5 * * * *"      # every hour at :05 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-snapshot
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Extract from Power BI
+        env:
+          PBI_EMBED_URL: ${{ secrets.PBI_EMBED_URL }}
+        run: python scripts/pbi_extract.py --extract
+
+      - name: Build snapshot
+        run: python scripts/build_snapshot.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "snapshot-bot"
+          git config user.email "snapshot-bot@users.noreply.github.com"
+          git add data/snapshot
+          if git diff --staged --quiet; then
+            echo "no change"
+          else
+            git commit -m "snapshot refresh $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
