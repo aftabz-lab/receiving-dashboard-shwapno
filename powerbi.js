@@ -601,6 +601,7 @@ export class PowerBIDataClient {
       : section === "supporting" ? specs.slice(4)
         : section === "outlets" ? [specs[4]]
           : section === "kpiOutlets" ? [specs[0], specs[4]]
+          : section === "breakdown" ? [specs[2], specs[3]]
           : section === "options" ? specs.slice(5)
             : specs;
     const needsCompositeKpi = filters.masterCategory === "all" && (section === "core" || section === "all");
