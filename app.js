@@ -4,7 +4,7 @@ import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
 const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v4";
-const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v2";
+const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v3";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = 400;
 const DATALIST_RENDER_LIMIT = 250;
@@ -388,8 +388,10 @@ function embeddedRangeSnapshot(snapshot) {
 function coreWithSnapshotOptions(core, snapshot) {
   return {
     ...core,
-    categories: core?.categories?.length ? core.categories : (snapshot?.categories || []),
-    regions: core?.regions?.length ? core.regions : (snapshot?.regions || []),
+    // Filtered breakdowns must never fall back to the unfiltered snapshot.
+    // An empty result is the correct result for the active selection.
+    categories: Array.isArray(core?.categories) ? core.categories : [],
+    regions: Array.isArray(core?.regions) ? core.regions : [],
     outlets: core?.outlets?.length ? core.outlets : (snapshot?.outlets || []),
     categoryOptions: snapshot?.categoryOptions || [],
     articleOptions: snapshot?.articleOptions || [],
