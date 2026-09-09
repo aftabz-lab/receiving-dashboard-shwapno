@@ -161,6 +161,13 @@ function signedCompact(value) {
   return `${number > 0 ? "+" : "−"}${compactNf.format(Math.abs(number))}`;
 }
 
+function signedExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  if (number === 0) return "0";
+  return `${number > 0 ? "+" : "−"}${nf.format(Math.abs(number))}`;
+}
+
 function percentage(value) {
   const number = finite(value);
   return number == null ? "—" : `${percentNf.format(number)}%`;
@@ -175,6 +182,12 @@ function bdt(value) {
   if (absolute >= 100_000) return `${sign}৳${(absolute / 100_000).toFixed(1)} L`;
   if (absolute >= 1_000) return `${sign}৳${(absolute / 1_000).toFixed(1)}K`;
   return `${sign}৳${nf.format(absolute)}`;
+}
+
+function bdtExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  return `${number < 0 ? "−" : ""}৳${nf.format(Math.abs(number))}`;
 }
 
 function toDate(value) {
@@ -703,11 +716,11 @@ function renderKpis(kpi, data) {
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
 
-  setKpi("kpi-receiving", received);
-  setKpi("kpi-sales", sales);
-  setKpi("kpi-gap", gap, signedCompact);
-  setKpi("kpi-inventory", kpi.Inventory);
-  setKpi("kpi-over-value", kpi.OverValue, bdt);
+  setKpi("kpi-receiving", received, exact);
+  setKpi("kpi-sales", sales, exact);
+  setKpi("kpi-gap", gap, signedExact);
+  setKpi("kpi-inventory", kpi.Inventory, exact);
+  setKpi("kpi-over-value", kpi.OverValue, bdtExact);
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
