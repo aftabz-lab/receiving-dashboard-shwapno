@@ -1,0 +1,36 @@
+name: Discover model
+
+# Run this by hand from the Actions tab. It does not extract any data.
+# It just asks the Power BI report what tables and columns exist, prints them
+# in the log, and attaches data/model_schema.json as a downloadable artifact.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Ask the report for its schema
+        env:
+          PBI_EMBED_URL: ${{ secrets.PBI_EMBED_URL }}
+        run: python scripts/pbi_extract.py --discover
+
+      - name: Upload schema
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-schema
+          path: data/model_schema.json
+          if-no-files-found: warn
