@@ -10,7 +10,8 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260909-3">
+  <link rel="stylesheet" href="./styles.css?v=20260909-4">
+  <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to dashboard</a>
@@ -62,7 +63,9 @@
 
     <section id="filters-panel" class="filter-panel is-open" aria-label="Cascading dashboard filters">
       <div class="filter-grid">
-        <label class="filter-field"><span>Period</span><select id="period-filter"><option value="7">Latest 7 days</option><option value="30" selected>Latest 30 days</option><option value="60">Latest 60 days</option><option value="90">Latest 90 days</option></select></label>
+        <label class="filter-field"><span>Period</span><select id="period-filter"><option value="7">Latest 7 days</option><option value="30" selected>Latest 30 days</option><option value="60">Latest 60 days</option><option value="90">Latest 90 days</option><option value="custom">Custom date range</option></select></label>
+        <label class="filter-field"><span>From date</span><input id="from-date-filter" type="date" aria-label="From date"></label>
+        <label class="filter-field"><span>To date</span><input id="to-date-filter" type="date" aria-label="To date"></label>
         <label class="filter-field"><span>Business division</span><select id="master-category-filter"><option value="all" selected>Select all</option><option value="COMPANY GOODS">COMPANY GOODS</option><option value="FRESH PRODUCE">FRESH PRODUCE</option><option value="GENERAL MERCHANDISE">GENERAL MERCHANDISE</option><option value="LIFESTYLE">LIFESTYLE</option><option value="LOOSE COMMODITY">LOOSE COMMODITY</option><option value="PACKED COMMODITY">PACKED COMMODITY</option></select></label>
         <label class="filter-field"><span>Category name</span><select id="category-filter"><option value="all">All categories</option></select></label>
         <label class="filter-field"><span>Division / Region</span><select id="region-filter"><option value="all">All divisions</option></select></label>
@@ -209,6 +212,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260909-4"></script>
+  <script type="module" src="./app.js?v=20260909-8"></script>
 </body>
 </html>

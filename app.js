@@ -1,14 +1,17 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-3";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-3";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-7";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v2";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v4";
+const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v3";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = 400;
 const DATALIST_RENDER_LIMIT = 250;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
+  dateFrom: null,
+  dateTo: null,
   masterCategory: "all",
   category: "all",
   region: "all",
@@ -29,6 +32,7 @@ const state = {
   client: new PowerBIDataClient(),
   organization: null,
   organizationPromise: null,
+  sharedSnapshot: null,
   data: null,
   filters: { ...DEFAULT_FILTERS },
   activeView: "overview",
@@ -54,9 +58,11 @@ const state = {
   detailDrillValue: null,
   detailRowFilters: {},
   detailSourceSearch: null,
-  detailSearchTimer: null,
+  detailSearchTimer: 0,
   detailSearch: "",
   loadSequence: 0,
+  loadController: null,
+  backgroundStatusTimer: 0,
   detailSequence: 0,
   nextRefreshAt: 0,
   visibleRows: { region: [], outlet: [], detail: [] },
@@ -75,6 +81,8 @@ const dom = {
   filterToggle: el("filter-toggle"),
   filtersPanel: el("filters-panel"),
   periodFilter: el("period-filter"),
+  fromDateFilter: el("from-date-filter"),
+  toDateFilter: el("to-date-filter"),
   masterCategoryFilter: el("master-category-filter"),
   categoryFilter: el("category-filter"),
   regionFilter: el("region-filter"),
@@ -155,6 +163,13 @@ function signedCompact(value) {
   return `${number > 0 ? "+" : "−"}${compactNf.format(Math.abs(number))}`;
 }
 
+function signedExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  if (number === 0) return "0";
+  return `${number > 0 ? "+" : "−"}${nf.format(Math.abs(number))}`;
+}
+
 function percentage(value) {
   const number = finite(value);
   return number == null ? "—" : `${percentNf.format(number)}%`;
@@ -169,6 +184,12 @@ function bdt(value) {
   if (absolute >= 100_000) return `${sign}৳${(absolute / 100_000).toFixed(1)} L`;
   if (absolute >= 1_000) return `${sign}৳${(absolute / 1_000).toFixed(1)}K`;
   return `${sign}৳${nf.format(absolute)}`;
+}
+
+function bdtExact(value) {
+  const number = finite(value);
+  if (number == null) return "—";
+  return `${number < 0 ? "−" : ""}৳${nf.format(Math.abs(number))}`;
 }
 
 function toDate(value) {
@@ -202,6 +223,27 @@ function dateRangeLabel(range) {
   }).format(start);
   const last = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(end);
   return `${first} – ${last}`;
+}
+
+function isoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : null;
+}
+
+function inclusiveEndIso(range) {
+  const end = range?.endExclusive ? endInclusive(range.endExclusive) : null;
+  return end && !Number.isNaN(end.getTime()) ? end.toISOString().slice(0, 10) : "";
+}
+
+function syncDateInputs(data) {
+  if (!data?.range) return;
+  const visibleFrom = state.filters.dateFrom || data.range.start || "";
+  const visibleTo = state.filters.dateTo || inclusiveEndIso(data.range);
+  const latestTo = inclusiveEndIso({ endExclusive: data.scope?.endExclusive || data.range.endExclusive });
+  dom.fromDateFilter.value = visibleFrom;
+  dom.toDateFilter.value = visibleTo;
+  dom.fromDateFilter.max = latestTo;
+  dom.toDateFilter.max = latestTo;
+  dom.periodFilter.value = state.filters.dateFrom && state.filters.dateTo ? "custom" : String(state.filters.days);
 }
 
 function dateTick(value) {
@@ -238,8 +280,8 @@ function filtersAreDefault() {
   return Object.entries(DEFAULT_FILTERS).every(([key, value]) => state.filters[key] === value);
 }
 
-function saveDashboardCache(data) {
-  if (!filtersAreDefault()) return;
+function saveDashboardCache(data, { force = false } = {}) {
+  if (!force && !filtersAreDefault()) return;
   try {
     localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
   } catch {}
@@ -249,6 +291,7 @@ function restoreDashboardCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || "null");
     if (!cached?.data || !cached.savedAt) return false;
+    state.sharedSnapshot = cached.data;
     state.data = cached.data;
     renderAll(state.data);
     dom.statusDot.className = "status-dot is-loading";
@@ -268,6 +311,96 @@ async function fetchSharedSnapshot() {
     throw new Error("The first shared snapshot has not been created yet.");
   }
   return data;
+}
+
+function cacheHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function filteredSnapshotRequest(filters, sourceTimestamp) {
+  const key = cacheHash(JSON.stringify({ filters, sourceTimestamp: sourceTimestamp || "unknown" }));
+  return new Request(new URL(`./cached-filter-${key}.json`, location.href).href);
+}
+
+async function readFilteredSnapshot(filters, sourceTimestamp) {
+  if (!("caches" in window)) return null;
+  try {
+    const cache = await caches.open(FILTER_CACHE_NAME);
+    const response = await cache.match(filteredSnapshotRequest(filters, sourceTimestamp));
+    if (!response) return null;
+    const record = await response.json();
+    return record?.sourceTimestamp === sourceTimestamp && record?.data?.range ? record.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeFilteredSnapshot(filters, sourceTimestamp, data) {
+  if (!("caches" in window) || !data?.range) return;
+  try {
+    const cache = await caches.open(FILTER_CACHE_NAME);
+    const body = JSON.stringify({ sourceTimestamp, savedAt: Date.now(), data });
+    await cache.put(filteredSnapshotRequest(filters, sourceTimestamp), new Response(body, { headers: { "Content-Type": "application/json" } }));
+  } catch (error) {
+    console.warn("Filtered snapshot cache could not be updated", error);
+  }
+}
+
+function snapshotMatchesCurrentFilters(snapshot) {
+  if (!snapshot?.range) return false;
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return false;
+  if (state.filters.dateFrom && state.filters.dateTo) {
+    return state.filters.dateFrom === snapshot.range.start && state.filters.dateTo === inclusiveEndIso(snapshot.range);
+  }
+  return Number(state.filters.days) === Number(snapshot.range.days);
+}
+
+function embeddedRangeSnapshot(snapshot) {
+  if (!Array.isArray(snapshot?.cachedRanges)) return null;
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return null;
+  let start = state.filters.dateFrom;
+  let end = state.filters.dateTo;
+  if (!start || !end) {
+    end = inclusiveEndIso({ endExclusive: snapshot.scope?.endExclusive || snapshot.range.endExclusive });
+    const endExclusive = nextIsoDate(end);
+    const date = new Date(`${endExclusive}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - Number(state.filters.days || 30));
+    start = date.toISOString().slice(0, 10);
+  }
+  const cached = snapshot.cachedRanges.find(item => item?.range?.start === start && inclusiveEndIso(item.range) === end);
+  return cached ? {
+    ...snapshot,
+    ...cached,
+    cachedRanges: snapshot.cachedRanges,
+    categoryOptions: snapshot.categoryOptions || [],
+    articleOptions: snapshot.articleOptions || [],
+    outletOptions: snapshot.outletOptions || [],
+    userOptions: snapshot.userOptions || [],
+    movementOptions: snapshot.movementOptions || [],
+  } : null;
+}
+
+function coreWithSnapshotOptions(core, snapshot) {
+  return {
+    ...core,
+    // Filtered breakdowns must never fall back to the unfiltered snapshot.
+    // An empty result is the correct result for the active selection.
+    categories: Array.isArray(core?.categories) ? core.categories : [],
+    regions: Array.isArray(core?.regions) ? core.regions : [],
+    outlets: core?.outlets?.length ? core.outlets : (snapshot?.outlets || []),
+    categoryOptions: snapshot?.categoryOptions || [],
+    articleOptions: snapshot?.articleOptions || [],
+    outletOptions: snapshot?.outletOptions || [],
+    userOptions: snapshot?.userOptions || [],
+    movementOptions: snapshot?.movementOptions || [],
+  };
 }
 
 function addSelectOptions(select, values, allLabel, selected) {
@@ -356,6 +489,8 @@ function organizationScopeCodes() {
 function buildPowerBIFilters() {
   const result = {
     days: state.filters.days,
+    dateFrom: state.filters.dateFrom,
+    dateTo: state.filters.dateTo,
     masterCategory: state.filters.masterCategory,
     category: state.filters.category,
     articleNo: state.filters.articleNo,
@@ -466,7 +601,9 @@ function updateCascadingOptions() {
 }
 
 function activeFilterLabels() {
-  const labels = [`${state.filters.days} days`];
+  const labels = [state.filters.dateFrom && state.filters.dateTo
+    ? `Date: ${dateRangeLabel({ start: state.filters.dateFrom, endExclusive: nextIsoDate(state.filters.dateTo) })}`
+    : `${state.filters.days} days`];
   if (state.filters.masterCategory !== "all") labels.push(state.filters.masterCategory);
   if (state.filters.category !== "all") labels.push(state.filters.category);
   if (state.filters.region !== "all") labels.push(state.filters.region);
@@ -485,12 +622,18 @@ function updateActiveFilterSummary() {
   dom.activeFilterSummary.textContent = labels.length ? labels.join(" · ") : "All data";
 }
 
+function nextIsoDate(value) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function setLoading(loading) {
   dom.main.setAttribute("aria-busy", String(loading));
   dom.loadingBar.classList.toggle("is-active", loading);
   dom.refreshButton.disabled = loading;
   dom.refreshButton.classList.toggle("is-refreshing", loading);
-  [dom.periodFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
+  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
 
   if (loading) {
@@ -520,7 +663,8 @@ async function refreshOrganization() {
     const organization = await loadOrganizationSnapshot();
     state.organization = organization;
     dom.organizationStatus.classList.remove("is-warning");
-    dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet mappings · updated ${dhakaDateTime(organization.updatedAt)}`;
+    dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet hierarchy mappings loaded`;
+    dom.organizationStatus.title = `Separate mapping file updated ${dhakaDateTime(organization.updatedAt)}`;
     if (state.data) renderAll(state.data);
     return organization;
   } catch (error) {
@@ -528,6 +672,7 @@ async function refreshOrganization() {
     if (!state.organization) {
       dom.organizationStatus.classList.add("is-warning");
       dom.organizationStatus.textContent = "Zonal/RHO mapping unavailable · Power BI data remains active";
+      dom.organizationStatus.removeAttribute("title");
     }
     return state.organization;
   }
@@ -575,11 +720,11 @@ function renderKpis(kpi, data) {
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
 
-  setKpi("kpi-receiving", received);
-  setKpi("kpi-sales", sales);
-  setKpi("kpi-gap", gap, signedCompact);
-  setKpi("kpi-inventory", kpi.Inventory);
-  setKpi("kpi-over-value", kpi.OverValue, bdt);
+  setKpi("kpi-receiving", received, exact);
+  setKpi("kpi-sales", sales, exact);
+  setKpi("kpi-gap", gap, signedExact);
+  setKpi("kpi-inventory", kpi.Inventory, exact);
+  setKpi("kpi-over-value", kpi.OverValue, bdtExact);
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
@@ -987,6 +1132,7 @@ function renderOutlets() {
 function renderAll(data) {
   data.enrichedOutlets = (data.outlets || []).map(enrichOutlet);
   const kpi = data.kpis?.[0] || {};
+  syncDateInputs(data);
   updateCascadingOptions();
   renderPulse(kpi, data);
   renderKpis(kpi, data);
@@ -1105,12 +1251,17 @@ function detailScopeLabel() {
   if (state.detailRowFilters.articleNo) labels.push(`Article ${state.detailRowFilters.articleNo}`);
   if (state.detailRowFilters.userCode) labels.push(`User ${state.detailRowFilters.userCode}`);
   if (state.detailRowFilters.movementCode) labels.push(`Movement ${state.detailRowFilters.movementCode}`);
-  if (state.detailSourceSearch?.articleNo) labels.push(`Source article ${state.detailSourceSearch.articleNo}`);
+  if (state.detailSourceSearch?.articleNo) labels.push(`Article ${state.detailSourceSearch.articleNo}`);
   return [...new Set(labels)].join(" · ");
 }
 
 function currentManagementFilters() {
   const filters = detailFiltersForContext(state.detailContext);
+  // These five tables reproduce the saved Power BI "Over Receiving" page.
+  // If the overview combines divisions, keep the page's saved division here.
+  if (filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
+    filters.masterCategory = state.data.scope.masterCategory;
+  }
   const additions = state.detailRowFilters;
   if (additions.outletCodes?.length) {
     filters.region = "all";
@@ -1119,7 +1270,12 @@ function currentManagementFilters() {
   for (const key of ["category", "articleNo", "userCode", "movementCode"]) {
     if (additions[key]) filters[key] = additions[key];
   }
-  if (state.detailSourceSearch?.articleNo) filters.articleNo = state.detailSourceSearch.articleNo;
+  if (state.detailSourceSearch?.articleNo) {
+    filters.articleNo = state.detailSourceSearch.articleNo;
+    // An exact search follows the dashboard's active business-division scope.
+    // When the dashboard is on All, query the article across all divisions.
+    if (state.filters.masterCategory === "all") filters.masterCategory = "all";
+  }
   return filters;
 }
 
@@ -1130,11 +1286,9 @@ function configureManagementTable(tableNumber) {
   state.sorts.detail = { key: table.defaultSort, direction: table.defaultDirection || "desc" };
   setText("detail-title", table.title);
   setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
-  dom.detailSearch.placeholder = state.detailTableNumber === 1
-    ? "Search rows or enter an exact Article Code"
-    : state.detailTableNumber === 5
-      ? "Search article, PO, movement, user or date"
-      : "Search any value in this management table";
+  dom.detailSearch.placeholder = state.detailTableNumber === 5
+    ? "Search article, PO, movement, user or date"
+    : "Search any value in this management table";
   dom.detailTabs.querySelectorAll("[data-management-table]").forEach(button => {
     const active = Number(button.dataset.managementTable) === state.detailTableNumber;
     button.classList.toggle("is-active", active);
@@ -1164,7 +1318,10 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
     if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
       state.detailRows = cached.rows;
     } else {
-      const result = await state.client.loadManagementTable(filters, state.detailTableNumber);
+      const result = await state.client.loadManagementTable(filters, state.detailTableNumber, {
+        range: state.data.range,
+        scope: state.data.scope,
+      });
       if (sequence !== state.detailSequence) return;
       state.detailRows = normalizeManagementRows(result.rows);
       state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
@@ -1189,7 +1346,7 @@ async function openDrill(metric, context = null, rawValue = null) {
   state.detailDrillValue = finite(rawValue) ?? selectedMetricValue(metric, context);
   state.detailRowFilters = {};
   state.detailSourceSearch = null;
-  clearTimeout(state.detailSearchTimer);
+  window.clearTimeout(state.detailSearchTimer);
   state.detailSearch = "";
   dom.detailSearch.value = "";
   openDialog();
@@ -1287,16 +1444,10 @@ function renderDetail() {
   renderDetailHeader();
   updateSortIndicators("detail");
   renderDetailSummary(state.detailRows.length);
-  const resultLabel = state.detailSourceSearch?.articleNo
-    ? `${exact(sorted.length)} source row${sorted.length === 1 ? "" : "s"} for article ${state.detailSourceSearch.articleNo}`
-    : visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} rows`;
-  setText("detail-result-count", resultLabel);
+  setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} rows`);
 
   if (!visible.length) {
-    const emptyMessage = state.detailSourceSearch?.articleNo
-      ? `Article ${state.detailSourceSearch.articleNo} was not returned for the selected outlet, date and filter scope.`
-      : "No rows match the current management-table scope and search.";
-    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">${escapeHtml(emptyMessage)}</td></tr>`;
+    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">No rows match the current management-table scope and search.</td></tr>`;
     return;
   }
 
@@ -1304,8 +1455,8 @@ function renderDetail() {
 }
 
 function detailArticleCandidate(value) {
-  const candidate = String(value || "").split("—")[0].trim();
-  return candidate.length >= 5 && /^[A-Za-z0-9._/-]+$/.test(candidate) && /\d/.test(candidate) ? candidate : null;
+  const candidate = String(value || "").trim();
+  return /^\d{5,}$/.test(candidate) ? candidate : null;
 }
 
 function runDetailSourceSearch(articleNo) {
@@ -1316,7 +1467,7 @@ function runDetailSourceSearch(articleNo) {
 }
 
 function handleDetailSearchInput(value, immediate = false) {
-  clearTimeout(state.detailSearchTimer);
+  window.clearTimeout(state.detailSearchTimer);
   state.detailSearch = value;
   const candidate = detailArticleCandidate(value);
 
@@ -1338,11 +1489,21 @@ function handleDetailSearchInput(value, immediate = false) {
 
 async function loadDashboard({ refreshMetadata = false } = {}) {
   const sequence = ++state.loadSequence;
-  setLoading(true);
+  if (state.loadController) state.loadController.abort();
+  state.loadController = null;
+  if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+  const blockingLoad = !state.data;
+  if (blockingLoad) setLoading(true);
   clearError();
   if (!navigator.onLine) {
-    setLoading(false);
-    showError(new Error("This device is offline."));
+    if (blockingLoad) {
+      setLoading(false);
+      showError(new Error("This device is offline."));
+    } else {
+      dom.statusDot.className = "status-dot is-error";
+      dom.connectionStatus.textContent = "Device is offline";
+      dom.sourceFreshness.textContent = "Showing the last successfully loaded snapshot";
+    }
     return;
   }
 
@@ -1350,61 +1511,106 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     const organizationPromise = refreshMetadata || !state.organizationPromise
       ? (state.organizationPromise = refreshOrganization())
       : state.organizationPromise;
+    const snapshotPromise = !state.sharedSnapshot || refreshMetadata
+      ? fetchSharedSnapshot()
+      : Promise.resolve(state.sharedSnapshot);
+    const [snapshot] = await Promise.all([snapshotPromise, organizationPromise]);
+    if (sequence !== state.loadSequence) return;
+    state.sharedSnapshot = snapshot;
+    state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+    saveDashboardCache(snapshot, { force: true });
 
-    if (filtersAreDefault()) {
-      const data = await fetchSharedSnapshot();
-      if (sequence !== state.loadSequence) return;
-      state.data = data;
-      state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-      saveDashboardCache(data);
-      renderAll(data);
+    if (snapshotMatchesCurrentFilters(snapshot)) {
+      state.data = snapshot;
+      renderAll(snapshot);
       dom.statusDot.className = "status-dot";
       dom.connectionStatus.textContent = "Shared Power BI snapshot";
-      dom.sourceFreshness.textContent = `Snapshot updated ${dhakaDateTime(data.snapshotGeneratedAt || data.queryTimestamp)}`;
+      dom.sourceFreshness.textContent = `Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
       return;
     }
 
-    await organizationPromise;
+    const embeddedSelection = embeddedRangeSnapshot(snapshot);
+    if (embeddedSelection) {
+      state.data = embeddedSelection;
+      renderAll(embeddedSelection);
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Shared Power BI snapshot";
+      dom.sourceFreshness.textContent = `Selected date range loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
+      return;
+    }
+
     if (refreshMetadata) {
       state.client = new PowerBIDataClient();
       state.detailCache.clear();
     }
     const requestFilters = buildPowerBIFilters();
-    const dataPromise = state.client.load(requestFilters, { section: "core" });
-    const [data] = await Promise.all([dataPromise, organizationPromise]);
+    const cachedSelection = await readFilteredSnapshot(requestFilters, snapshot.sourceTimestamp);
     if (sequence !== state.loadSequence) return;
-    state.data = data;
+    if (cachedSelection) {
+      state.data = cachedSelection;
+      renderAll(cachedSelection);
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Cached selected snapshot";
+      dom.sourceFreshness.textContent = `Loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
+      if (!refreshMetadata) return;
+    } else {
+      state.data = snapshot;
+      renderAll(snapshot);
+      dom.statusDot.className = "status-dot is-loading";
+      dom.connectionStatus.textContent = "Latest snapshot displayed";
+      dom.sourceFreshness.textContent = "Preparing the exact selected range in the background · controls remain available";
+    }
+    setLoading(false);
+
+    const controller = new AbortController();
+    state.loadController = controller;
+    state.backgroundStatusTimer = window.setTimeout(() => {
+      if (sequence !== state.loadSequence) return;
+      dom.connectionStatus.textContent = "Latest snapshot displayed";
+      dom.sourceFreshness.textContent = "Power BI is still processing the exact selection in the background";
+    }, 8000);
+
+    const data = await state.client.load(requestFilters, { section: "core", signal: controller.signal });
+    if (sequence !== state.loadSequence) return;
+    if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+    state.backgroundStatusTimer = 0;
+    state.data = coreWithSnapshotOptions(data, snapshot);
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    renderAll(data);
+    renderAll(state.data);
     dom.statusDot.className = "status-dot";
     dom.connectionStatus.textContent = "Live Power BI data";
     dom.sourceFreshness.textContent = `Overview ready · loading outlet and search data…`;
-    setLoading(false);
 
-    state.client.load(requestFilters, { section: "supporting" }).then(supporting => {
+    try {
+      const supporting = await state.client.load(requestFilters, { section: "supporting", signal: controller.signal });
       if (sequence !== state.loadSequence) return;
       state.data = { ...state.data, ...supporting };
-      saveDashboardCache(state.data);
       renderAll(state.data);
+      await writeFilteredSnapshot(requestFilters, snapshot.sourceTimestamp, state.data);
       dom.sourceFreshness.textContent = `Model refreshed ${dhakaDateTime(state.data.sourceTimestamp)}`;
-    }).catch(error => {
-      if (sequence !== state.loadSequence) return;
+    } catch (error) {
+      if (sequence !== state.loadSequence || error?.name === "AbortError") return;
       console.warn("Supporting dashboard data could not be loaded", error);
-      dom.sourceFreshness.textContent = `Overview ready · outlet/search data unavailable; refresh to retry`;
-    });
+      dom.sourceFreshness.textContent = `Overview ready · outlet/search data stayed on the last snapshot`;
+    }
   } catch (error) {
-    if (sequence !== state.loadSequence) return;
+    if (sequence !== state.loadSequence || error?.name === "AbortError") return;
     console.error("Dashboard refresh failed", error);
-    if (state.data && filtersAreDefault()) {
+    if (state.data) {
       clearError();
-      dom.statusDot.className = "status-dot";
+      dom.statusDot.className = "status-dot is-error";
       dom.connectionStatus.textContent = "Last saved snapshot";
-      dom.sourceFreshness.textContent = "Snapshot update unavailable · keeping the previous working view";
+      dom.sourceFreshness.textContent = "Exact live selection unavailable · the latest working snapshot remains visible";
     } else {
       showError(error);
     }
   } finally {
-    if (sequence === state.loadSequence) setLoading(false);
+    if (sequence === state.loadSequence) {
+      if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+      state.backgroundStatusTimer = 0;
+      state.loadController = null;
+      setLoading(false);
+    }
   }
 }
 
@@ -1426,17 +1632,65 @@ function applySearchSelection(type) {
   const direct = suggestions.find(label => label.split("—")[0].trim().toLocaleLowerCase() === codeCandidate.toLocaleLowerCase());
   const nameMatches = suggestions.filter(label => label.split("—").slice(1).join("—").trim().toLocaleLowerCase() === value.toLocaleLowerCase());
   const match = exactLabel || direct || (nameMatches.length === 1 ? nameMatches[0] : null);
-  if (!match) {
+  const directArticleCode = type === "article" && /^[A-Za-z0-9][A-Za-z0-9._/-]{1,31}$/.test(codeCandidate)
+    ? codeCandidate
+    : null;
+  if (!match && !directArticleCode) {
     dom.cascadeNote.textContent = `No exact ${type} match. Select a suggestion or enter an exact code.`;
     input.setAttribute("aria-invalid", "true");
     return;
   }
 
   input.removeAttribute("aria-invalid");
-  state.filters[key] = match.split("—")[0].trim();
-  input.value = match;
-  dom.cascadeNote.textContent = "Applying selection; all related filter options will shorten automatically.";
+  state.filters[key] = match ? match.split("—")[0].trim() : directArticleCode;
+  input.value = match || directArticleCode;
+  dom.cascadeNote.textContent = match
+    ? "Applying selection; all related filter options will shorten automatically."
+    : `Checking exact article code ${directArticleCode} in the selected outlet and date range.`;
   loadDashboard();
+}
+
+let dateApplyTimer = 0;
+
+function applyCustomDateRange() {
+  const dateFrom = isoDate(dom.fromDateFilter.value);
+  const dateTo = isoDate(dom.toDateFilter.value);
+  if (!dateFrom || !dateTo) {
+    dom.cascadeNote.textContent = "Select both From date and To date to apply a custom range.";
+    return;
+  }
+
+  const latestTo = inclusiveEndIso({ endExclusive: state.data?.scope?.endExclusive || state.data?.range?.endExclusive });
+  const invalidOrder = dateFrom > dateTo;
+  const beyondLatest = latestTo && dateTo > latestTo;
+  if (invalidOrder) dom.fromDateFilter.setAttribute("aria-invalid", "true");
+  else dom.fromDateFilter.removeAttribute("aria-invalid");
+  if (invalidOrder || beyondLatest) dom.toDateFilter.setAttribute("aria-invalid", "true");
+  else dom.toDateFilter.removeAttribute("aria-invalid");
+  if (invalidOrder) {
+    dom.cascadeNote.textContent = "From date cannot be later than To date.";
+    return;
+  }
+  if (beyondLatest) {
+    dom.cascadeNote.textContent = `The latest available dashboard date is ${latestTo}.`;
+    return;
+  }
+
+  const changed = state.filters.dateFrom !== dateFrom || state.filters.dateTo !== dateTo;
+  state.filters.dateFrom = dateFrom;
+  state.filters.dateTo = dateTo;
+  dom.periodFilter.value = "custom";
+  dom.cascadeNote.textContent = `Custom date range ${dateFrom} to ${dateTo} selected · loading the latest snapshot first.`;
+  if (changed) loadDashboard();
+}
+
+function scheduleCustomDateRange() {
+  if (dateApplyTimer) window.clearTimeout(dateApplyTimer);
+  dom.cascadeNote.textContent = "Date selection detected · waiting briefly for both From and To dates.";
+  dateApplyTimer = window.setTimeout(() => {
+    dateApplyTimer = 0;
+    applyCustomDateRange();
+  }, 900);
 }
 
 function applyOrganizationSearch(type) {
@@ -1562,7 +1816,7 @@ dom.main.addEventListener("keydown", event => {
 dom.detailDialog.addEventListener("click", event => {
   const tab = event.target.closest("[data-management-table]");
   if (tab) {
-    clearTimeout(state.detailSearchTimer);
+    window.clearTimeout(state.detailSearchTimer);
     state.detailSourceSearch = null;
     state.detailSearch = "";
     dom.detailSearch.value = "";
@@ -1573,7 +1827,7 @@ dom.detailDialog.addEventListener("click", event => {
   const link = event.target.closest("[data-management-action]");
   if (!link) return;
   const value = link.dataset.managementValue;
-  clearTimeout(state.detailSearchTimer);
+  window.clearTimeout(state.detailSearchTimer);
   state.detailSourceSearch = null;
   state.detailSearch = "";
   dom.detailSearch.value = "";
@@ -1612,7 +1866,23 @@ dom.detailSearch.addEventListener("keydown", event => {
   handleDetailSearchInput(event.currentTarget.value, true);
 });
 
-dom.periodFilter.addEventListener("change", event => { state.filters.days = Number(event.target.value); loadDashboard(); });
+dom.periodFilter.addEventListener("change", event => {
+  if (dateApplyTimer) {
+    window.clearTimeout(dateApplyTimer);
+    dateApplyTimer = 0;
+  }
+  if (event.target.value === "custom") {
+    applyCustomDateRange();
+    return;
+  }
+  state.filters.days = Number(event.target.value);
+  state.filters.dateFrom = null;
+  state.filters.dateTo = null;
+  dom.fromDateFilter.removeAttribute("aria-invalid");
+  dom.toDateFilter.removeAttribute("aria-invalid");
+  loadDashboard();
+});
+[dom.fromDateFilter, dom.toDateFilter].forEach(input => input.addEventListener("change", scheduleCustomDateRange));
 dom.masterCategoryFilter.addEventListener("change", event => {
   state.filters.masterCategory = event.target.value;
   state.filters.category = "all";
@@ -1686,8 +1956,14 @@ dom.regionFilter.addEventListener("change", event => {
 });
 
 dom.resetButton.addEventListener("click", () => {
+  if (dateApplyTimer) {
+    window.clearTimeout(dateApplyTimer);
+    dateApplyTimer = 0;
+  }
   state.filters = { ...DEFAULT_FILTERS };
   dom.periodFilter.value = "30";
+  dom.fromDateFilter.removeAttribute("aria-invalid");
+  dom.toDateFilter.removeAttribute("aria-invalid");
   dom.masterCategoryFilter.value = "all";
   dom.categoryFilter.value = "all";
   dom.regionFilter.value = "all";
@@ -1712,7 +1988,7 @@ dom.themeButton.addEventListener("click", () => setTheme(document.documentElemen
 dom.refreshButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true }));
 dom.retryButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true }));
 el("detail-close").addEventListener("click", () => {
-  clearTimeout(state.detailSearchTimer);
+  window.clearTimeout(state.detailSearchTimer);
   dom.detailDialog.close();
 });
 
