@@ -15,16 +15,13 @@ concurrency:
 jobs:
   refresh-snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Read Power BI and build snapshot
-        env:
-          # A manual run always rebuilds; the schedule keeps the cheap early exit.
-          FORCE_SNAPSHOT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+      - name: Read Power BI and build partitioned snapshot
         run: node scripts/update-snapshot.mjs
       - name: Publish snapshot when changed
         run: |
