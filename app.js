@@ -912,6 +912,34 @@ function drillNumber(display, rawValue, metric, contextType, contextValue, conte
   return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-drill-value="${escapeHtml(rawValue)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabels[metric] || metric)} details">${escapeHtml(display)}</button>`;
 }
 
+function regionsFromOutlets(outlets) {
+  // Fallback for snapshots where the grouped-by-division query came back
+  // empty. Every outlet row already carries its Region, so the division
+  // view is rebuilt by grouping those. Unit and incident figures are
+  // additive and roll up correctly. OverValue is a non-additive Power BI
+  // measure, so the rolled-up figure is indicative only.
+  const buckets = new Map();
+  (outlets || []).forEach(row => {
+    if (!row) return;
+    const key = row.Region == null ? "__UNASSIGNED__" : row.Region;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        Region: row.Region ?? null,
+        Sales: 0, Receiving: 0, Inventory: 0,
+        OverValue: 0, OverIncidents: 0, UnderIncidents: 0,
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.Sales += finite(row.Sales) ?? 0;
+    bucket.Receiving += finite(row.Receiving) ?? 0;
+    bucket.Inventory += finite(row.Inventory) ?? 0;
+    bucket.OverValue += finite(row.OverValue) ?? 0;
+    bucket.OverIncidents += finite(row.OverIncidents) ?? 0;
+    bucket.UnderIncidents += finite(row.UnderIncidents) ?? 0;
+  });
+  return [...buckets.values()];
+}
+
 function renderRegions(rows) {
   const values = rows.map(row => {
     const receiving = finite(row.Receiving) ?? 0;
@@ -1038,6 +1066,9 @@ function renderAll(data) {
   renderPulse(kpi, data);
   renderKpis(kpi, data);
   renderTrend(data.trend || []);
+  if (!(data.regions || []).length) {
+    data.regions = regionsFromOutlets(data.outlets || data.enrichedOutlets || []);
+  }
   renderCategoryChart(data.categories || []);
   renderRegions(data.regions || []);
   renderSignals(data);
