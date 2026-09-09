@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: 20
       - name: Read Power BI and build snapshot
+        env:
+          # A manual run always rebuilds; the schedule keeps the cheap early exit.
+          FORCE_SNAPSHOT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: node scripts/update-snapshot.mjs
       - name: Publish snapshot when changed
         run: |
