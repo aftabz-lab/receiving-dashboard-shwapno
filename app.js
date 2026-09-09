@@ -1,4 +1,4 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-4";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-5";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -9,6 +9,8 @@ const DETAIL_ROW_LIMIT = 400;
 const DATALIST_RENDER_LIMIT = 250;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
+  dateFrom: null,
+  dateTo: null,
   masterCategory: "all",
   category: "all",
   region: "all",
@@ -73,6 +75,8 @@ const dom = {
   filterToggle: el("filter-toggle"),
   filtersPanel: el("filters-panel"),
   periodFilter: el("period-filter"),
+  fromDateFilter: el("from-date-filter"),
+  toDateFilter: el("to-date-filter"),
   masterCategoryFilter: el("master-category-filter"),
   categoryFilter: el("category-filter"),
   regionFilter: el("region-filter"),
@@ -200,6 +204,27 @@ function dateRangeLabel(range) {
   }).format(start);
   const last = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(end);
   return `${first} – ${last}`;
+}
+
+function isoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : null;
+}
+
+function inclusiveEndIso(range) {
+  const end = range?.endExclusive ? endInclusive(range.endExclusive) : null;
+  return end && !Number.isNaN(end.getTime()) ? end.toISOString().slice(0, 10) : "";
+}
+
+function syncDateInputs(data) {
+  if (!data?.range) return;
+  const visibleFrom = state.filters.dateFrom || data.range.start || "";
+  const visibleTo = state.filters.dateTo || inclusiveEndIso(data.range);
+  const latestTo = inclusiveEndIso({ endExclusive: data.scope?.endExclusive || data.range.endExclusive });
+  dom.fromDateFilter.value = visibleFrom;
+  dom.toDateFilter.value = visibleTo;
+  dom.fromDateFilter.max = latestTo;
+  dom.toDateFilter.max = latestTo;
+  dom.periodFilter.value = state.filters.dateFrom && state.filters.dateTo ? "custom" : String(state.filters.days);
 }
 
 function dateTick(value) {
@@ -354,6 +379,8 @@ function organizationScopeCodes() {
 function buildPowerBIFilters() {
   const result = {
     days: state.filters.days,
+    dateFrom: state.filters.dateFrom,
+    dateTo: state.filters.dateTo,
     masterCategory: state.filters.masterCategory,
     category: state.filters.category,
     articleNo: state.filters.articleNo,
@@ -464,7 +491,9 @@ function updateCascadingOptions() {
 }
 
 function activeFilterLabels() {
-  const labels = [`${state.filters.days} days`];
+  const labels = [state.filters.dateFrom && state.filters.dateTo
+    ? `Date: ${dateRangeLabel({ start: state.filters.dateFrom, endExclusive: nextIsoDate(state.filters.dateTo) })}`
+    : `${state.filters.days} days`];
   if (state.filters.masterCategory !== "all") labels.push(state.filters.masterCategory);
   if (state.filters.category !== "all") labels.push(state.filters.category);
   if (state.filters.region !== "all") labels.push(state.filters.region);
@@ -483,12 +512,18 @@ function updateActiveFilterSummary() {
   dom.activeFilterSummary.textContent = labels.length ? labels.join(" · ") : "All data";
 }
 
+function nextIsoDate(value) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function setLoading(loading) {
   dom.main.setAttribute("aria-busy", String(loading));
   dom.loadingBar.classList.toggle("is-active", loading);
   dom.refreshButton.disabled = loading;
   dom.refreshButton.classList.toggle("is-refreshing", loading);
-  [dom.periodFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
+  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
 
   if (loading) {
@@ -985,6 +1020,7 @@ function renderOutlets() {
 function renderAll(data) {
   data.enrichedOutlets = (data.outlets || []).map(enrichOutlet);
   const kpi = data.kpis?.[0] || {};
+  syncDateInputs(data);
   updateCascadingOptions();
   renderPulse(kpi, data);
   renderKpis(kpi, data);
@@ -1387,16 +1423,52 @@ function applySearchSelection(type) {
   const direct = suggestions.find(label => label.split("—")[0].trim().toLocaleLowerCase() === codeCandidate.toLocaleLowerCase());
   const nameMatches = suggestions.filter(label => label.split("—").slice(1).join("—").trim().toLocaleLowerCase() === value.toLocaleLowerCase());
   const match = exactLabel || direct || (nameMatches.length === 1 ? nameMatches[0] : null);
-  if (!match) {
+  const directArticleCode = type === "article" && /^[A-Za-z0-9][A-Za-z0-9._/-]{1,31}$/.test(codeCandidate)
+    ? codeCandidate
+    : null;
+  if (!match && !directArticleCode) {
     dom.cascadeNote.textContent = `No exact ${type} match. Select a suggestion or enter an exact code.`;
     input.setAttribute("aria-invalid", "true");
     return;
   }
 
   input.removeAttribute("aria-invalid");
-  state.filters[key] = match.split("—")[0].trim();
-  input.value = match;
-  dom.cascadeNote.textContent = "Applying selection; all related filter options will shorten automatically.";
+  state.filters[key] = match ? match.split("—")[0].trim() : directArticleCode;
+  input.value = match || directArticleCode;
+  dom.cascadeNote.textContent = match
+    ? "Applying selection; all related filter options will shorten automatically."
+    : `Checking exact article code ${directArticleCode} in the selected outlet and date range.`;
+  loadDashboard();
+}
+
+function applyCustomDateRange() {
+  const dateFrom = isoDate(dom.fromDateFilter.value);
+  const dateTo = isoDate(dom.toDateFilter.value);
+  if (!dateFrom || !dateTo) {
+    dom.cascadeNote.textContent = "Select both From date and To date to apply a custom range.";
+    return;
+  }
+
+  const latestTo = inclusiveEndIso({ endExclusive: state.data?.scope?.endExclusive || state.data?.range?.endExclusive });
+  const invalidOrder = dateFrom > dateTo;
+  const beyondLatest = latestTo && dateTo > latestTo;
+  if (invalidOrder) dom.fromDateFilter.setAttribute("aria-invalid", "true");
+  else dom.fromDateFilter.removeAttribute("aria-invalid");
+  if (invalidOrder || beyondLatest) dom.toDateFilter.setAttribute("aria-invalid", "true");
+  else dom.toDateFilter.removeAttribute("aria-invalid");
+  if (invalidOrder) {
+    dom.cascadeNote.textContent = "From date cannot be later than To date.";
+    return;
+  }
+  if (beyondLatest) {
+    dom.cascadeNote.textContent = `The latest available dashboard date is ${latestTo}.`;
+    return;
+  }
+
+  state.filters.dateFrom = dateFrom;
+  state.filters.dateTo = dateTo;
+  dom.periodFilter.value = "custom";
+  dom.cascadeNote.textContent = `Applying custom date range ${dateFrom} to ${dateTo}.`;
   loadDashboard();
 }
 
@@ -1563,7 +1635,19 @@ dom.managementSignals.addEventListener("click", event => {
 dom.outletSearch.addEventListener("input", event => { state.outletSearch = event.target.value; renderOutlets(); });
 dom.detailSearch.addEventListener("input", event => { state.detailSearch = event.target.value; renderDetail(); });
 
-dom.periodFilter.addEventListener("change", event => { state.filters.days = Number(event.target.value); loadDashboard(); });
+dom.periodFilter.addEventListener("change", event => {
+  if (event.target.value === "custom") {
+    applyCustomDateRange();
+    return;
+  }
+  state.filters.days = Number(event.target.value);
+  state.filters.dateFrom = null;
+  state.filters.dateTo = null;
+  dom.fromDateFilter.removeAttribute("aria-invalid");
+  dom.toDateFilter.removeAttribute("aria-invalid");
+  loadDashboard();
+});
+[dom.fromDateFilter, dom.toDateFilter].forEach(input => input.addEventListener("change", applyCustomDateRange));
 dom.masterCategoryFilter.addEventListener("change", event => {
   state.filters.masterCategory = event.target.value;
   state.filters.category = "all";
@@ -1639,6 +1723,8 @@ dom.regionFilter.addEventListener("change", event => {
 dom.resetButton.addEventListener("click", () => {
   state.filters = { ...DEFAULT_FILTERS };
   dom.periodFilter.value = "30";
+  dom.fromDateFilter.removeAttribute("aria-invalid");
+  dom.toDateFilter.removeAttribute("aria-invalid");
   dom.masterCategoryFilter.value = "all";
   dom.categoryFilter.value = "all";
   dom.regionFilter.value = "all";

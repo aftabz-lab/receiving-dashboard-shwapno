@@ -432,6 +432,17 @@ function rangeForDays(scope, days) {
   };
 }
 
+function rangeForFilters(scope, filters = {}) {
+  const dateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(filters.dateFrom || "")) ? String(filters.dateFrom) : null;
+  const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(filters.dateTo || "")) ? String(filters.dateTo) : null;
+  if (dateFrom && dateTo && dateFrom <= dateTo) {
+    const endExclusive = shiftIsoDate(dateTo, 1);
+    const days = Math.max(1, Math.round((Date.parse(`${endExclusive}T00:00:00Z`) - Date.parse(`${dateFrom}T00:00:00Z`)) / 86_400_000));
+    return { start: dateFrom, endExclusive, days };
+  }
+  return rangeForDays(scope, filters.days);
+}
+
 export class PowerBIDataClient {
   constructor() {
     this.model = null;
@@ -495,7 +506,7 @@ export class PowerBIDataClient {
   async load(filters = {}, { section = "all" } = {}) {
     if (!this.model || !this.report || !this.scope) await this.connect();
 
-    const range = rangeForDays(this.scope, filters.days);
+    const range = rangeForFilters(this.scope, filters);
     const where = commonWhere(range, this.scope, filters);
     const categoryOptionWhere = commonWhere(range, this.scope, filters, new Set(["category", "article"]));
     const articleOptionWhere = commonWhere(range, this.scope, filters, new Set(["article"]));
@@ -564,6 +575,8 @@ export class PowerBIDataClient {
           column("a", "ArticleNo", "ArticleNo"),
           column("a", "ArticleName", "ArticleName"),
           column("a", "Category3", "Category"),
+          sum("r", "qty_in_unit_of_entry", "Receiving"),
+          sum("s", "ActualInvoicedQuantity", "Sales"),
         ], from, articleOptionWhere, 8000),
       },
       {
@@ -621,7 +634,7 @@ export class PowerBIDataClient {
 
   async loadArticleDetails(filters = {}, metric = "OverValue") {
     if (!this.model || !this.report || !this.scope) await this.connect();
-    const range = rangeForDays(this.scope, filters.days);
+    const range = rangeForFilters(this.scope, filters);
     const where = commonWhere(range, this.scope, filters);
     const from = sourceSet(filters);
     const metricColumns = {
@@ -665,7 +678,7 @@ export class PowerBIDataClient {
       : this.scope;
     const range = queryContext?.range
       ? { ...queryContext.range, days: Number(queryContext.range.days) || Number(filters.days) || 30 }
-      : rangeForDays(effectiveScope, filters.days);
+      : rangeForFilters(effectiveScope, filters);
     const where = commonWhere(range, effectiveScope, filters);
     const common = [
       measure("m", "Opening Stock", "OpeningStock"),
