@@ -656,10 +656,17 @@ export class PowerBIDataClient {
     return { rows: decoded.articles, range, queryTimestamp };
   }
 
-  async loadManagementTable(filters = {}, tableNumber = 1) {
+  async loadManagementTable(filters = {}, tableNumber = 1, queryContext = null) {
     if (!this.model || !this.report || !this.scope) await this.connect();
-    const range = rangeForDays(this.scope, filters.days);
-    const where = commonWhere(range, this.scope, filters);
+    // Keep drill-downs in the exact snapshot context that produced the
+    // clicked value, even if the published report refreshes afterward.
+    const effectiveScope = queryContext?.scope
+      ? { ...this.scope, ...queryContext.scope }
+      : this.scope;
+    const range = queryContext?.range
+      ? { ...queryContext.range, days: Number(queryContext.range.days) || Number(filters.days) || 30 }
+      : rangeForDays(effectiveScope, filters.days);
+    const where = commonWhere(range, effectiveScope, filters);
     const common = [
       measure("m", "Opening Stock", "OpeningStock"),
       sum("r", "qty_in_unit_of_entry", "Receiving"),

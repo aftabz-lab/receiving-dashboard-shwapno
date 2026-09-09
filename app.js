@@ -1,5 +1,5 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-3";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-3";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-4";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -1108,6 +1108,11 @@ function detailScopeLabel() {
 
 function currentManagementFilters() {
   const filters = detailFiltersForContext(state.detailContext);
+  // These five tables reproduce the saved Power BI "Over Receiving" page.
+  // If the overview combines divisions, keep the page's saved division here.
+  if (filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
+    filters.masterCategory = state.data.scope.masterCategory;
+  }
   const additions = state.detailRowFilters;
   if (additions.outletCodes?.length) {
     filters.region = "all";
@@ -1158,7 +1163,10 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
     if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
       state.detailRows = cached.rows;
     } else {
-      const result = await state.client.loadManagementTable(filters, state.detailTableNumber);
+      const result = await state.client.loadManagementTable(filters, state.detailTableNumber, {
+        range: state.data.range,
+        scope: state.data.scope,
+      });
       if (sequence !== state.detailSequence) return;
       state.detailRows = normalizeManagementRows(result.rows);
       state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
