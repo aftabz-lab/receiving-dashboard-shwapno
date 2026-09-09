@@ -24,10 +24,18 @@ if (previous?.ready && previous.snapshotVersion >= 2 && previous.sourceTimestamp
 const supporting = await client.load(filters, { section: "options" });
 const outletGroups = [];
 const kpiGroups = [];
+const categoryGroups = [];
+const regionGroups = [];
 for (const masterCategory of core.scope.masterCategories) {
   const result = await client.load({ ...filters, masterCategory }, { section: "kpiOutlets" });
   outletGroups.push(...(result.outlets || []));
   kpiGroups.push(...(result.kpis || []));
+  // The all-division context returns blank for the category and division
+  // breakdowns too, exactly as it does for KPIs and outlets. Collect them
+  // from the same six valid master-category contexts and merge below.
+  const breakdown = await client.load({ ...filters, masterCategory }, { section: "breakdown" });
+  categoryGroups.push(...(breakdown.categories || []));
+  regionGroups.push(...(breakdown.regions || []));
 }
 const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const sum = (rows, field) => rows.reduce((total, row) => total + number(row[field]), 0);
@@ -43,6 +51,21 @@ for (const row of outletGroups) {
   outletMap.set(code, current);
 }
 const outlets = [...outletMap.values()];
+const mergeGroups = (rows, keyField) => {
+  const map = new Map();
+  for (const row of rows) {
+    if (!row) continue;
+    const key = row[keyField] == null ? "__UNASSIGNED__" : String(row[keyField]);
+    const current = map.get(key) || { ...row, Sales: 0, Receiving: 0, Inventory: 0, OverValue: 0, OverIncidents: 0, UnderIncidents: 0 };
+    for (const field of ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"]) {
+      current[field] = number(current[field]) + number(row[field]);
+    }
+    map.set(key, current);
+  }
+  return [...map.values()];
+};
+const categories = mergeGroups(categoryGroups, "Category");
+const regions = mergeGroups(regionGroups, "Region");
 const receiving = sum(kpiGroups, "Receiving") || sum(core.trend || [], "Receiving");
 const sales = sum(kpiGroups, "Sales") || sum(core.trend || [], "Sales");
 const inventory = sum(kpiGroups, "Inventory");
@@ -71,6 +94,8 @@ const snapshot = {
   ...core,
   ...supporting,
   outlets,
+  categories,
+  regions,
   // The all-division DAX result is blank in this report. Master categories are
   // disjoint, so keep the source total from those six valid DAX contexts rather
   // than adding outlet detail rows (Over Receiving Value is non-additive there).
@@ -84,6 +109,8 @@ for (const key of ["kpis", "trend", "categories", "regions", "outlets", "categor
   if (!Array.isArray(snapshot[key])) throw new Error(`Snapshot is missing ${key}.`);
 }
 if (!snapshot.kpis.length || !snapshot.range || !snapshot.trend.length) throw new Error("Power BI returned an empty snapshot; the previous snapshot was preserved.");
+if (!snapshot.categories.length || !snapshot.regions.length) throw new Error("Category or division breakdown came back empty; the previous snapshot was preserved.");
+console.log(`Breakdowns: ${snapshot.categories.length} categories, ${snapshot.regions.length} divisions.`);
 
 const temporaryPath = new URL("../snapshot.next.json", import.meta.url);
 const destinationPath = new URL("../snapshot.json", import.meta.url);
