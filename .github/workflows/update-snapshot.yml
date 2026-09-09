@@ -1,0 +1,36 @@
+name: Refresh shared Power BI snapshot
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: receiving-dashboard-snapshot
+  cancel-in-progress: false
+
+jobs:
+  refresh-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Read Power BI and build snapshot
+        run: node scripts/update-snapshot.mjs
+      - name: Publish snapshot when changed
+        run: |
+          if git diff --quiet -- snapshot.json; then
+            echo "Snapshot content is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add snapshot.json
+          git commit -m "Refresh receiving dashboard snapshot"
+          git push
