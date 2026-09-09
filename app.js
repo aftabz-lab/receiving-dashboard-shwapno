@@ -1,10 +1,10 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-1";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-1";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-2";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-2";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_MS = 24 * 60 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-default-v8";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v1";
+const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = 400;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
@@ -226,16 +226,26 @@ function saveDashboardCache(data) {
 function restoreDashboardCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || "null");
-    if (!cached?.data || !cached.savedAt || Date.now() - cached.savedAt > DASHBOARD_CACHE_MS) return false;
+    if (!cached?.data || !cached.savedAt) return false;
     state.data = cached.data;
     renderAll(state.data);
     dom.statusDot.className = "status-dot is-loading";
-    dom.connectionStatus.textContent = "Refreshing live data";
-    dom.sourceFreshness.textContent = `Showing saved view from ${dhakaDateTime(cached.savedAt)}`;
+    dom.connectionStatus.textContent = "Last saved snapshot";
+    dom.sourceFreshness.textContent = `Displayed instantly · checking for an update…`;
     return true;
   } catch {
     return false;
   }
+}
+
+async function fetchSharedSnapshot() {
+  const response = await fetch(SHARED_SNAPSHOT_URL, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Shared snapshot could not be loaded (${response.status}).`);
+  const data = await response.json();
+  if (!data?.ready || !Array.isArray(data.kpis) || !data.range) {
+    throw new Error("The first shared snapshot has not been created yet.");
+  }
+  return data;
 }
 
 function addSelectOptions(select, values, allLabel, selected) {
@@ -443,8 +453,8 @@ function setLoading(loading) {
 
   if (loading) {
     dom.statusDot.className = "status-dot is-loading";
-    dom.connectionStatus.textContent = state.data ? "Applying filters" : "Connecting to live data";
-    dom.sourceFreshness.textContent = state.data ? "Keeping the current view visible…" : "Reading Power BI and organization mapping…";
+    dom.connectionStatus.textContent = state.data ? "Applying filters" : "Loading saved snapshot";
+    dom.sourceFreshness.textContent = state.data ? "Keeping the current view visible…" : "Opening the latest shared view…";
   } else if (!state.organization) {
     dom.rhoFilter.disabled = true;
     dom.zonalFilter.disabled = true;
@@ -1118,13 +1128,28 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
   }
 
   try {
+    const organizationPromise = refreshMetadata || !state.organizationPromise
+      ? (state.organizationPromise = refreshOrganization())
+      : state.organizationPromise;
+
+    if (filtersAreDefault()) {
+      const data = await fetchSharedSnapshot();
+      if (sequence !== state.loadSequence) return;
+      state.data = data;
+      state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+      saveDashboardCache(data);
+      renderAll(data);
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Shared Power BI snapshot";
+      dom.sourceFreshness.textContent = `Snapshot updated ${dhakaDateTime(data.snapshotGeneratedAt || data.queryTimestamp)}`;
+      return;
+    }
+
+    await organizationPromise;
     if (refreshMetadata) {
       state.client = new PowerBIDataClient();
       state.detailCache.clear();
     }
-    const organizationPromise = refreshMetadata || !state.organizationPromise
-      ? (state.organizationPromise = refreshOrganization())
-      : state.organizationPromise;
     const requestFilters = buildPowerBIFilters();
     const dataPromise = state.client.load(requestFilters, { section: "core" });
     const [data] = await Promise.all([dataPromise, organizationPromise]);
@@ -1151,7 +1176,14 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
   } catch (error) {
     if (sequence !== state.loadSequence) return;
     console.error("Dashboard refresh failed", error);
-    showError(error);
+    if (state.data && filtersAreDefault()) {
+      clearError();
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Last saved snapshot";
+      dom.sourceFreshness.textContent = "Snapshot update unavailable · keeping the previous working view";
+    } else {
+      showError(error);
+    }
   } finally {
     if (sequence === state.loadSequence) setLoading(false);
   }

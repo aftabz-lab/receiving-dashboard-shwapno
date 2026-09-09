@@ -4,14 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#102b4e">
-  <meta name="description" content="Receiving Dashboard-Shwapno — an executive view of live receiving, sales, inventory and outlet exceptions from Power BI.">
+  <meta name="description" content="Receiving Dashboard-Shwapno — an executive view of the latest shared Power BI receiving snapshot.">
   <title>Receiving Dashboard-Shwapno</title>
   <script>
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
-  <link rel="preconnect" href="https://wabi-east-asia-b-primary-api.analysis.windows.net" crossorigin>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260909-1">
+  <link rel="stylesheet" href="./styles.css?v=20260909-2">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to dashboard</a>
@@ -28,7 +27,7 @@
     <div class="topbar-actions">
       <div class="source-status" role="status" aria-live="polite">
         <span id="status-dot" class="status-dot is-loading" aria-hidden="true"></span>
-        <span><strong id="connection-status">Connecting to live data</strong><small id="source-freshness">Reading the published Power BI model…</small></span>
+        <span><strong id="connection-status">Loading saved snapshot</strong><small id="source-freshness">Opening the latest shared view…</small></span>
       </div>
       <button id="theme-toggle" class="icon-button secondary compact-action" type="button" title="Switch colour mode">
         <svg class="theme-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/></svg>
@@ -201,6 +200,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260909-1"></script>
+  <script type="module" src="./app.js?v=20260909-2"></script>
 </body>
 </html>

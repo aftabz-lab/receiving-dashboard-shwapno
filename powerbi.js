@@ -506,7 +506,9 @@ export class PowerBIDataClient {
 
     const requestedSpecs = section === "core" ? specs.slice(0, 4)
       : section === "supporting" ? specs.slice(4)
-        : specs;
+        : section === "outlets" ? [specs[4]]
+          : section === "options" ? specs.slice(5)
+            : specs;
     const { decoded, queryTimestamp } = await this.runSpecs(requestedSpecs);
 
     return {
