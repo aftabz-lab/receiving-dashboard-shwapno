@@ -1,5 +1,5 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-1";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-1";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -353,11 +353,14 @@ function canonicalArticleLabel(articleNo) {
 
 function updateCascadingOptions() {
   if (!state.data) return;
+  const categoryOptions = state.data.categoryOptions || [];
+  const outletOptions = state.data.outletOptions || [];
+  const articleOptions = state.data.articleOptions || [];
   const masterCategories = state.data.scope?.masterCategories?.length
     ? state.data.scope.masterCategories
     : ["COMPANY GOODS", "FRESH PRODUCE", "GENERAL MERCHANDISE", "LIFESTYLE", "LOOSE COMMODITY", "PACKED COMMODITY"];
   addSelectOptions(dom.masterCategoryFilter, masterCategories, "Select all", state.filters.masterCategory);
-  addSelectOptions(dom.categoryFilter, state.data.categoryOptions.map(row => row.Category), "All categories", state.filters.category);
+  addSelectOptions(dom.categoryFilter, categoryOptions.map(row => row.Category), "All categories", state.filters.category);
 
   if (state.organization?.rows) {
     addSelectOptions(dom.regionFilter, currentOrganizationRows("region").map(row => row.Division), "All divisions", state.filters.region);
@@ -376,7 +379,7 @@ function updateCascadingOptions() {
         .sort((a, b) => a.OutletCode.localeCompare(b.OutletCode, undefined, { numeric: true }))
         .map(row => `${row.OutletCode} — ${row.OutletName || "Unnamed outlet"}`);
     } else {
-      state.outletSuggestions = state.data.outletOptions
+      state.outletSuggestions = outletOptions
         .filter(row => row.OutletCode)
         .sort((a, b) => normalizeOutletCode(a.OutletCode).localeCompare(normalizeOutletCode(b.OutletCode), undefined, { numeric: true }))
         .map(row => {
@@ -386,7 +389,7 @@ function updateCascadingOptions() {
         });
     }
   } else {
-    addSelectOptions(dom.regionFilter, state.data.outletOptions.map(row => row.Region), "All divisions", state.filters.region);
+    addSelectOptions(dom.regionFilter, outletOptions.map(row => row.Region), "All divisions", state.filters.region);
     state.rhoSuggestions = [];
     state.zonalSuggestions = [];
     fillDatalist(dom.rhoOptions, []);
@@ -395,14 +398,14 @@ function updateCascadingOptions() {
     dom.zonalFilter.value = "";
     dom.rhoFilter.disabled = true;
     dom.zonalFilter.disabled = true;
-    state.outletSuggestions = state.data.outletOptions
+    state.outletSuggestions = outletOptions
       .filter(row => row.OutletCode)
       .map(row => `${row.OutletCode} — ${row.Outlet || "Unnamed outlet"}`);
   }
   fillDatalist(dom.outletOptions, state.outletSuggestions);
 
   const seenArticles = new Set();
-  state.articleSuggestions = state.data.articleOptions
+  state.articleSuggestions = articleOptions
     .filter(row => row.ArticleNo && !seenArticles.has(String(row.ArticleNo)) && seenArticles.add(String(row.ArticleNo)))
     .map(row => `${row.ArticleNo} — ${row.ArticleName || "Unnamed article"}`);
   fillDatalist(dom.articleOptions, state.articleSuggestions);
