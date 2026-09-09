@@ -12,6 +12,7 @@ const DEFAULT_MASTER_CATEGORIES = [
   "LOOSE COMMODITY",
   "PACKED COMMODITY",
 ];
+const MAX_QUERY_ROWS = 30000;
 
 function uuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -451,10 +452,10 @@ export class PowerBIDataClient {
     this.sourceTimestamp = null;
   }
 
-  async connect() {
+  async connect({ signal } = {}) {
     const response = await fetch(
       `${API_ROOT}/public/reports/${RESOURCE_KEY}/modelsAndExploration?preferReadOnlySession=true`,
-      { headers: requestHeaders(), cache: "no-store" }
+      { headers: requestHeaders(), cache: "no-store", signal }
     );
     if (!response.ok) throw new Error(`Power BI connection failed (${response.status}).`);
 
@@ -469,7 +470,7 @@ export class PowerBIDataClient {
     return this;
   }
 
-  async runSpecs(specs) {
+  async runSpecs(specs, { signal } = {}) {
     const queries = specs.map(spec => ({
       ...spec.query,
       ApplicationContext: {
@@ -482,6 +483,7 @@ export class PowerBIDataClient {
       method: "POST",
       headers: requestHeaders(true),
       cache: "no-store",
+      signal,
       body: JSON.stringify({ version: "1.0.0", queries, cancelQueries: [], modelId: this.model.id }),
     });
     if (!response.ok) throw new Error(`Power BI data request failed (${response.status}).`);
@@ -503,8 +505,8 @@ export class PowerBIDataClient {
     };
   }
 
-  async load(filters = {}, { section = "all" } = {}) {
-    if (!this.model || !this.report || !this.scope) await this.connect();
+  async load(filters = {}, { section = "all", signal } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
 
     const range = rangeForFilters(this.scope, filters);
     const where = commonWhere(range, this.scope, filters);
@@ -577,7 +579,7 @@ export class PowerBIDataClient {
           column("a", "Category3", "Category"),
           sum("r", "qty_in_unit_of_entry", "Receiving"),
           sum("s", "ActualInvoicedQuantity", "Sales"),
-        ], from, articleOptionWhere, 8000),
+        ], from, articleOptionWhere, MAX_QUERY_ROWS),
       },
       {
         key: "outletOptions",
@@ -585,11 +587,11 @@ export class PowerBIDataClient {
           column("o", "OutletCode", "OutletCode"),
           column("o", "OutletName", "Outlet"),
           column("o", "RegionName", "Region"),
-        ], from, outletOptionWhere, 5000),
+        ], from, outletOptionWhere, MAX_QUERY_ROWS),
       },
       {
         key: "userOptions",
-        query: createQuery([column("u", "created_by", "UserCode")], userFrom, userOptionWhere, 3000),
+        query: createQuery([column("u", "created_by", "UserCode")], userFrom, userOptionWhere, MAX_QUERY_ROWS),
       },
       {
         key: "movementOptions",
@@ -597,14 +599,30 @@ export class PowerBIDataClient {
       },
     ];
 
-    let requestedSpecs = section === "core" ? specs.slice(0, 4)
-      : section === "supporting" ? specs.slice(4)
-        : section === "outlets" ? [specs[4]]
-          : section === "kpiOutlets" ? [specs[0], specs[4]]
-          : section === "breakdown" ? [specs[2], specs[3]]
-          : section === "options" ? specs.slice(5)
-            : specs;
-    const needsCompositeKpi = filters.masterCategory === "all" && (section === "core" || section === "all");
+    const snapshotOutletSpec = {
+      key: "snapshotOutlets",
+      query: createQuery([
+        column("o", "OutletCode", "OutletCode"),
+        column("o", "OutletName", "Outlet"),
+        column("o", "RegionName", "Region"),
+        sum("s", "ActualInvoicedQuantity", "Sales"),
+        sum("r", "qty_in_unit_of_entry", "Receiving"),
+      ], from, where, MAX_QUERY_ROWS),
+    };
+    const sections = {
+      core: specs.slice(0, 4),
+      supporting: specs.slice(4),
+      kpis: [specs[0]],
+      trend: [specs[1]],
+      outlets: [specs[4]],
+      articles: [specs[6]],
+      snapshotOutlets: [snapshotOutletSpec],
+      kpiOutlets: [specs[0], specs[4]],
+      snapshotBreakdowns: [specs[2], specs[3]],
+      options: specs.slice(5),
+    };
+    let requestedSpecs = sections[section] || specs;
+    const needsCompositeKpi = filters.masterCategory === "all" && (section === "core" || section === "all" || section === "kpis");
     const compositeKeys = [];
     if (needsCompositeKpi) {
       const compositeSpecs = this.scope.masterCategories.map((masterCategory, index) => {
@@ -617,7 +635,7 @@ export class PowerBIDataClient {
       });
       requestedSpecs = [...requestedSpecs, ...compositeSpecs];
     }
-    const { decoded, queryTimestamp } = await this.runSpecs(requestedSpecs);
+    const { decoded, queryTimestamp } = await this.runSpecs(requestedSpecs, { signal });
     if (needsCompositeKpi) {
       const rows = compositeKeys.flatMap(key => decoded[key] || []);
       decoded.kpis = [composeKpiContexts(rows, decoded.kpis?.[0] || {})];
@@ -633,8 +651,8 @@ export class PowerBIDataClient {
     };
   }
 
-  async loadArticleDetails(filters = {}, metric = "OverValue") {
-    if (!this.model || !this.report || !this.scope) await this.connect();
+  async loadArticleDetails(filters = {}, metric = "OverValue", { signal } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
     const range = rangeForFilters(this.scope, filters);
     const where = commonWhere(range, this.scope, filters);
     const from = sourceSet(filters);
@@ -664,14 +682,14 @@ export class PowerBIDataClient {
         column("a", "MasterCategory", "MasterCategory"),
         column("a", "Category3", "Category"),
         ...selectedMetrics,
-      ], from, where, 5000),
+      ], from, where, MAX_QUERY_ROWS),
     }];
-    const { decoded, queryTimestamp } = await this.runSpecs(specs);
+    const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
     return { rows: decoded.articles, range, queryTimestamp };
   }
 
-  async loadManagementTable(filters = {}, tableNumber = 1, queryContext = null) {
-    if (!this.model || !this.report || !this.scope) await this.connect();
+  async loadManagementTable(filters = {}, tableNumber = 1, queryContext = null, { signal } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
     // Keep drill-downs in the exact snapshot context that produced the
     // clicked value, even if the published report refreshes afterward.
     const effectiveScope = queryContext?.scope
@@ -707,8 +725,8 @@ export class PowerBIDataClient {
     };
     const table = Number(tableNumber) || 1;
     const select = definitions[table] || definitions[1];
-    const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, table === 5 ? 8000 : 5000) }];
-    const { decoded, queryTimestamp } = await this.runSpecs(specs);
+    const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, MAX_QUERY_ROWS) }];
+    const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
     return { rows: decoded.rows, range, queryTimestamp };
   }
 }

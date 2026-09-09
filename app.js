@@ -1,9 +1,10 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-5";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-7";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v2";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v4";
+const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v2";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = 400;
 const DATALIST_RENDER_LIMIT = 250;
@@ -31,6 +32,7 @@ const state = {
   client: new PowerBIDataClient(),
   organization: null,
   organizationPromise: null,
+  sharedSnapshot: null,
   data: null,
   filters: { ...DEFAULT_FILTERS },
   activeView: "overview",
@@ -57,6 +59,8 @@ const state = {
   detailRowFilters: {},
   detailSearch: "",
   loadSequence: 0,
+  loadController: null,
+  backgroundStatusTimer: 0,
   detailSequence: 0,
   nextRefreshAt: 0,
   visibleRows: { region: [], outlet: [], detail: [] },
@@ -155,19 +159,6 @@ function signedCompact(value) {
   if (number == null) return "—";
   if (number === 0) return "0";
   return `${number > 0 ? "+" : "−"}${compactNf.format(Math.abs(number))}`;
-}
-
-function signedExact(value) {
-  const number = finite(value);
-  if (number == null) return "—";
-  if (number === 0) return "0";
-  return `${number > 0 ? "+" : "−"}${nf.format(Math.abs(number))}`;
-}
-
-function bdtExact(value) {
-  const number = finite(value);
-  if (number == null) return "—";
-  return `${number < 0 ? "−" : ""}৳${nf.format(Math.abs(number))}`;
 }
 
 function percentage(value) {
@@ -274,8 +265,8 @@ function filtersAreDefault() {
   return Object.entries(DEFAULT_FILTERS).every(([key, value]) => state.filters[key] === value);
 }
 
-function saveDashboardCache(data) {
-  if (!filtersAreDefault()) return;
+function saveDashboardCache(data, { force = false } = {}) {
+  if (!force && !filtersAreDefault()) return;
   try {
     localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
   } catch {}
@@ -285,6 +276,7 @@ function restoreDashboardCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || "null");
     if (!cached?.data || !cached.savedAt) return false;
+    state.sharedSnapshot = cached.data;
     state.data = cached.data;
     renderAll(state.data);
     dom.statusDot.className = "status-dot is-loading";
@@ -304,6 +296,94 @@ async function fetchSharedSnapshot() {
     throw new Error("The first shared snapshot has not been created yet.");
   }
   return data;
+}
+
+function cacheHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function filteredSnapshotRequest(filters, sourceTimestamp) {
+  const key = cacheHash(JSON.stringify({ filters, sourceTimestamp: sourceTimestamp || "unknown" }));
+  return new Request(new URL(`./cached-filter-${key}.json`, location.href).href);
+}
+
+async function readFilteredSnapshot(filters, sourceTimestamp) {
+  if (!("caches" in window)) return null;
+  try {
+    const cache = await caches.open(FILTER_CACHE_NAME);
+    const response = await cache.match(filteredSnapshotRequest(filters, sourceTimestamp));
+    if (!response) return null;
+    const record = await response.json();
+    return record?.sourceTimestamp === sourceTimestamp && record?.data?.range ? record.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeFilteredSnapshot(filters, sourceTimestamp, data) {
+  if (!("caches" in window) || !data?.range) return;
+  try {
+    const cache = await caches.open(FILTER_CACHE_NAME);
+    const body = JSON.stringify({ sourceTimestamp, savedAt: Date.now(), data });
+    await cache.put(filteredSnapshotRequest(filters, sourceTimestamp), new Response(body, { headers: { "Content-Type": "application/json" } }));
+  } catch (error) {
+    console.warn("Filtered snapshot cache could not be updated", error);
+  }
+}
+
+function snapshotMatchesCurrentFilters(snapshot) {
+  if (!snapshot?.range) return false;
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return false;
+  if (state.filters.dateFrom && state.filters.dateTo) {
+    return state.filters.dateFrom === snapshot.range.start && state.filters.dateTo === inclusiveEndIso(snapshot.range);
+  }
+  return Number(state.filters.days) === Number(snapshot.range.days);
+}
+
+function embeddedRangeSnapshot(snapshot) {
+  if (!Array.isArray(snapshot?.cachedRanges)) return null;
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return null;
+  let start = state.filters.dateFrom;
+  let end = state.filters.dateTo;
+  if (!start || !end) {
+    end = inclusiveEndIso({ endExclusive: snapshot.scope?.endExclusive || snapshot.range.endExclusive });
+    const endExclusive = nextIsoDate(end);
+    const date = new Date(`${endExclusive}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - Number(state.filters.days || 30));
+    start = date.toISOString().slice(0, 10);
+  }
+  const cached = snapshot.cachedRanges.find(item => item?.range?.start === start && inclusiveEndIso(item.range) === end);
+  return cached ? {
+    ...snapshot,
+    ...cached,
+    cachedRanges: snapshot.cachedRanges,
+    categoryOptions: snapshot.categoryOptions || [],
+    articleOptions: snapshot.articleOptions || [],
+    outletOptions: snapshot.outletOptions || [],
+    userOptions: snapshot.userOptions || [],
+    movementOptions: snapshot.movementOptions || [],
+  } : null;
+}
+
+function coreWithSnapshotOptions(core, snapshot) {
+  return {
+    ...core,
+    categories: core?.categories?.length ? core.categories : (snapshot?.categories || []),
+    regions: core?.regions?.length ? core.regions : (snapshot?.regions || []),
+    outlets: core?.outlets?.length ? core.outlets : (snapshot?.outlets || []),
+    categoryOptions: snapshot?.categoryOptions || [],
+    articleOptions: snapshot?.articleOptions || [],
+    outletOptions: snapshot?.outletOptions || [],
+    userOptions: snapshot?.userOptions || [],
+    movementOptions: snapshot?.movementOptions || [],
+  };
 }
 
 function addSelectOptions(select, values, allLabel, selected) {
@@ -566,7 +646,8 @@ async function refreshOrganization() {
     const organization = await loadOrganizationSnapshot();
     state.organization = organization;
     dom.organizationStatus.classList.remove("is-warning");
-    dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet mappings · updated ${dhakaDateTime(organization.updatedAt)}`;
+    dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet hierarchy mappings loaded`;
+    dom.organizationStatus.title = `Separate mapping file updated ${dhakaDateTime(organization.updatedAt)}`;
     if (state.data) renderAll(state.data);
     return organization;
   } catch (error) {
@@ -574,6 +655,7 @@ async function refreshOrganization() {
     if (!state.organization) {
       dom.organizationStatus.classList.add("is-warning");
       dom.organizationStatus.textContent = "Zonal/RHO mapping unavailable · Power BI data remains active";
+      dom.organizationStatus.removeAttribute("title");
     }
     return state.organization;
   }
@@ -590,12 +672,12 @@ function renderPulse(kpi, data) {
   if (gap > 0) {
     label.classList.add("positive");
     label.textContent = "Inventory build";
-    setText("balance-headline", `${exact(Math.abs(gap))} more units received than sold`, `${exact(Math.abs(gap))} units`);
+    setText("balance-headline", `${compact(Math.abs(gap))} more units received than sold`, `${exact(Math.abs(gap))} units`);
     setText("balance-detail", sales ? `Receipts ran ${percentage(Math.abs(gapPct))} above sales in this data window.` : "Receipts were recorded while invoiced sales were zero in this data window.");
   } else if (gap < 0) {
     label.classList.add("negative");
     label.textContent = "Inventory drawdown";
-    setText("balance-headline", `${exact(Math.abs(gap))} more units sold than received`, `${exact(Math.abs(gap))} units`);
+    setText("balance-headline", `${compact(Math.abs(gap))} more units sold than received`, `${exact(Math.abs(gap))} units`);
     setText("balance-detail", `Sales ran ${percentage(Math.abs(gapPct))} above receipts in this data window.`);
   } else {
     label.classList.add("balanced");
@@ -621,11 +703,11 @@ function renderKpis(kpi, data) {
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
 
-  setKpi("kpi-receiving", received, exact);
-  setKpi("kpi-sales", sales, exact);
-  setKpi("kpi-gap", gap, signedExact);
-  setKpi("kpi-inventory", kpi.Inventory, exact);
-  setKpi("kpi-over-value", kpi.OverValue, bdtExact);
+  setKpi("kpi-receiving", received);
+  setKpi("kpi-sales", sales);
+  setKpi("kpi-gap", gap, signedCompact);
+  setKpi("kpi-inventory", kpi.Inventory);
+  setKpi("kpi-over-value", kpi.OverValue, bdt);
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
@@ -638,12 +720,12 @@ function renderKpis(kpi, data) {
   gapNode.classList.toggle("is-positive", (gap ?? 0) > 0);
   gapNode.classList.toggle("is-negative", (gap ?? 0) < 0);
 
-  setText("stock-days", finite(kpi.StockDay) == null ? "—" : nf.format(Math.round(Number(kpi.StockDay))));
+  setText("stock-days", finite(kpi.StockDay) == null ? "—" : Number(kpi.StockDay).toFixed(1));
   setText("over-rate", percentage(kpi.OverIncidentPct));
   setText("under-rate", percentage(kpi.UnderIncidentPct));
   setText("over-incidents", `${exact(kpi.OverIncidents)} incidents`);
   setText("under-incidents", `${exact(kpi.UnderIncidents)} incidents`);
-  setText("latest-stock", exact(kpi.LatestStock), exact(kpi.LatestStock));
+  setText("latest-stock", compact(kpi.LatestStock), exact(kpi.LatestStock));
 }
 
 function niceCeiling(value) {
@@ -912,34 +994,6 @@ function drillNumber(display, rawValue, metric, contextType, contextValue, conte
   return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-drill-value="${escapeHtml(rawValue)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabels[metric] || metric)} details">${escapeHtml(display)}</button>`;
 }
 
-function regionsFromOutlets(outlets) {
-  // Fallback for snapshots where the grouped-by-division query came back
-  // empty. Every outlet row already carries its Region, so the division
-  // view is rebuilt by grouping those. Unit and incident figures are
-  // additive and roll up correctly. OverValue is a non-additive Power BI
-  // measure, so the rolled-up figure is indicative only.
-  const buckets = new Map();
-  (outlets || []).forEach(row => {
-    if (!row) return;
-    const key = row.Region == null ? "__UNASSIGNED__" : row.Region;
-    if (!buckets.has(key)) {
-      buckets.set(key, {
-        Region: row.Region ?? null,
-        Sales: 0, Receiving: 0, Inventory: 0,
-        OverValue: 0, OverIncidents: 0, UnderIncidents: 0,
-      });
-    }
-    const bucket = buckets.get(key);
-    bucket.Sales += finite(row.Sales) ?? 0;
-    bucket.Receiving += finite(row.Receiving) ?? 0;
-    bucket.Inventory += finite(row.Inventory) ?? 0;
-    bucket.OverValue += finite(row.OverValue) ?? 0;
-    bucket.OverIncidents += finite(row.OverIncidents) ?? 0;
-    bucket.UnderIncidents += finite(row.UnderIncidents) ?? 0;
-  });
-  return [...buckets.values()];
-}
-
 function renderRegions(rows) {
   const values = rows.map(row => {
     const receiving = finite(row.Receiving) ?? 0;
@@ -1066,9 +1120,6 @@ function renderAll(data) {
   renderPulse(kpi, data);
   renderKpis(kpi, data);
   renderTrend(data.trend || []);
-  if (!(data.regions || []).length) {
-    data.regions = regionsFromOutlets(data.outlets || data.enrichedOutlets || []);
-  }
   renderCategoryChart(data.categories || []);
   renderRegions(data.regions || []);
   renderSignals(data);
@@ -1379,11 +1430,21 @@ function renderDetail() {
 
 async function loadDashboard({ refreshMetadata = false } = {}) {
   const sequence = ++state.loadSequence;
-  setLoading(true);
+  if (state.loadController) state.loadController.abort();
+  state.loadController = null;
+  if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+  const blockingLoad = !state.data;
+  if (blockingLoad) setLoading(true);
   clearError();
   if (!navigator.onLine) {
-    setLoading(false);
-    showError(new Error("This device is offline."));
+    if (blockingLoad) {
+      setLoading(false);
+      showError(new Error("This device is offline."));
+    } else {
+      dom.statusDot.className = "status-dot is-error";
+      dom.connectionStatus.textContent = "Device is offline";
+      dom.sourceFreshness.textContent = "Showing the last successfully loaded snapshot";
+    }
     return;
   }
 
@@ -1391,61 +1452,106 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     const organizationPromise = refreshMetadata || !state.organizationPromise
       ? (state.organizationPromise = refreshOrganization())
       : state.organizationPromise;
+    const snapshotPromise = !state.sharedSnapshot || refreshMetadata
+      ? fetchSharedSnapshot()
+      : Promise.resolve(state.sharedSnapshot);
+    const [snapshot] = await Promise.all([snapshotPromise, organizationPromise]);
+    if (sequence !== state.loadSequence) return;
+    state.sharedSnapshot = snapshot;
+    state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+    saveDashboardCache(snapshot, { force: true });
 
-    if (filtersAreDefault()) {
-      const data = await fetchSharedSnapshot();
-      if (sequence !== state.loadSequence) return;
-      state.data = data;
-      state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-      saveDashboardCache(data);
-      renderAll(data);
+    if (snapshotMatchesCurrentFilters(snapshot)) {
+      state.data = snapshot;
+      renderAll(snapshot);
       dom.statusDot.className = "status-dot";
       dom.connectionStatus.textContent = "Shared Power BI snapshot";
-      dom.sourceFreshness.textContent = `Snapshot updated ${dhakaDateTime(data.snapshotGeneratedAt || data.queryTimestamp)}`;
+      dom.sourceFreshness.textContent = `Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
       return;
     }
 
-    await organizationPromise;
+    const embeddedSelection = embeddedRangeSnapshot(snapshot);
+    if (embeddedSelection) {
+      state.data = embeddedSelection;
+      renderAll(embeddedSelection);
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Shared Power BI snapshot";
+      dom.sourceFreshness.textContent = `Selected date range loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
+      return;
+    }
+
     if (refreshMetadata) {
       state.client = new PowerBIDataClient();
       state.detailCache.clear();
     }
     const requestFilters = buildPowerBIFilters();
-    const dataPromise = state.client.load(requestFilters, { section: "core" });
-    const [data] = await Promise.all([dataPromise, organizationPromise]);
+    const cachedSelection = await readFilteredSnapshot(requestFilters, snapshot.sourceTimestamp);
     if (sequence !== state.loadSequence) return;
-    state.data = data;
+    if (cachedSelection) {
+      state.data = cachedSelection;
+      renderAll(cachedSelection);
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Cached selected snapshot";
+      dom.sourceFreshness.textContent = `Loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
+      if (!refreshMetadata) return;
+    } else {
+      state.data = snapshot;
+      renderAll(snapshot);
+      dom.statusDot.className = "status-dot is-loading";
+      dom.connectionStatus.textContent = "Latest snapshot displayed";
+      dom.sourceFreshness.textContent = "Preparing the exact selected range in the background · controls remain available";
+    }
+    setLoading(false);
+
+    const controller = new AbortController();
+    state.loadController = controller;
+    state.backgroundStatusTimer = window.setTimeout(() => {
+      if (sequence !== state.loadSequence) return;
+      dom.connectionStatus.textContent = "Latest snapshot displayed";
+      dom.sourceFreshness.textContent = "Power BI is still processing the exact selection in the background";
+    }, 8000);
+
+    const data = await state.client.load(requestFilters, { section: "core", signal: controller.signal });
+    if (sequence !== state.loadSequence) return;
+    if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+    state.backgroundStatusTimer = 0;
+    state.data = coreWithSnapshotOptions(data, snapshot);
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    renderAll(data);
+    renderAll(state.data);
     dom.statusDot.className = "status-dot";
     dom.connectionStatus.textContent = "Live Power BI data";
     dom.sourceFreshness.textContent = `Overview ready · loading outlet and search data…`;
-    setLoading(false);
 
-    state.client.load(requestFilters, { section: "supporting" }).then(supporting => {
+    try {
+      const supporting = await state.client.load(requestFilters, { section: "supporting", signal: controller.signal });
       if (sequence !== state.loadSequence) return;
       state.data = { ...state.data, ...supporting };
-      saveDashboardCache(state.data);
       renderAll(state.data);
+      await writeFilteredSnapshot(requestFilters, snapshot.sourceTimestamp, state.data);
       dom.sourceFreshness.textContent = `Model refreshed ${dhakaDateTime(state.data.sourceTimestamp)}`;
-    }).catch(error => {
-      if (sequence !== state.loadSequence) return;
+    } catch (error) {
+      if (sequence !== state.loadSequence || error?.name === "AbortError") return;
       console.warn("Supporting dashboard data could not be loaded", error);
-      dom.sourceFreshness.textContent = `Overview ready · outlet/search data unavailable; refresh to retry`;
-    });
+      dom.sourceFreshness.textContent = `Overview ready · outlet/search data stayed on the last snapshot`;
+    }
   } catch (error) {
-    if (sequence !== state.loadSequence) return;
+    if (sequence !== state.loadSequence || error?.name === "AbortError") return;
     console.error("Dashboard refresh failed", error);
-    if (state.data && filtersAreDefault()) {
+    if (state.data) {
       clearError();
-      dom.statusDot.className = "status-dot";
+      dom.statusDot.className = "status-dot is-error";
       dom.connectionStatus.textContent = "Last saved snapshot";
-      dom.sourceFreshness.textContent = "Snapshot update unavailable · keeping the previous working view";
+      dom.sourceFreshness.textContent = "Exact live selection unavailable · the latest working snapshot remains visible";
     } else {
       showError(error);
     }
   } finally {
-    if (sequence === state.loadSequence) setLoading(false);
+    if (sequence === state.loadSequence) {
+      if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
+      state.backgroundStatusTimer = 0;
+      state.loadController = null;
+      setLoading(false);
+    }
   }
 }
 
@@ -1485,6 +1591,8 @@ function applySearchSelection(type) {
   loadDashboard();
 }
 
+let dateApplyTimer = 0;
+
 function applyCustomDateRange() {
   const dateFrom = isoDate(dom.fromDateFilter.value);
   const dateTo = isoDate(dom.toDateFilter.value);
@@ -1509,11 +1617,21 @@ function applyCustomDateRange() {
     return;
   }
 
+  const changed = state.filters.dateFrom !== dateFrom || state.filters.dateTo !== dateTo;
   state.filters.dateFrom = dateFrom;
   state.filters.dateTo = dateTo;
   dom.periodFilter.value = "custom";
-  dom.cascadeNote.textContent = `Applying custom date range ${dateFrom} to ${dateTo}.`;
-  loadDashboard();
+  dom.cascadeNote.textContent = `Custom date range ${dateFrom} to ${dateTo} selected · loading the latest snapshot first.`;
+  if (changed) loadDashboard();
+}
+
+function scheduleCustomDateRange() {
+  if (dateApplyTimer) window.clearTimeout(dateApplyTimer);
+  dom.cascadeNote.textContent = "Date selection detected · waiting briefly for both From and To dates.";
+  dateApplyTimer = window.setTimeout(() => {
+    dateApplyTimer = 0;
+    applyCustomDateRange();
+  }, 900);
 }
 
 function applyOrganizationSearch(type) {
@@ -1680,6 +1798,10 @@ dom.outletSearch.addEventListener("input", event => { state.outletSearch = event
 dom.detailSearch.addEventListener("input", event => { state.detailSearch = event.target.value; renderDetail(); });
 
 dom.periodFilter.addEventListener("change", event => {
+  if (dateApplyTimer) {
+    window.clearTimeout(dateApplyTimer);
+    dateApplyTimer = 0;
+  }
   if (event.target.value === "custom") {
     applyCustomDateRange();
     return;
@@ -1691,7 +1813,7 @@ dom.periodFilter.addEventListener("change", event => {
   dom.toDateFilter.removeAttribute("aria-invalid");
   loadDashboard();
 });
-[dom.fromDateFilter, dom.toDateFilter].forEach(input => input.addEventListener("change", applyCustomDateRange));
+[dom.fromDateFilter, dom.toDateFilter].forEach(input => input.addEventListener("change", scheduleCustomDateRange));
 dom.masterCategoryFilter.addEventListener("change", event => {
   state.filters.masterCategory = event.target.value;
   state.filters.category = "all";
@@ -1765,6 +1887,10 @@ dom.regionFilter.addEventListener("change", event => {
 });
 
 dom.resetButton.addEventListener("click", () => {
+  if (dateApplyTimer) {
+    window.clearTimeout(dateApplyTimer);
+    dateApplyTimer = 0;
+  }
   state.filters = { ...DEFAULT_FILTERS };
   dom.periodFilter.value = "30";
   dom.fromDateFilter.removeAttribute("aria-invalid");
