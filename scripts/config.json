@@ -1,0 +1,49 @@
+{
+  "_comment": "Run 'python scripts/pbi_extract.py --discover' first. It writes data/model_schema.json with every real table and column name. Replace the placeholders below with those exact names.",
+
+  "embed_url": "https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D",
+
+  "backend_url": null,
+
+  "tables": [
+    {
+      "table": "REPLACE_WITH_FACT_TABLE",
+      "columns": [
+        "Date",
+        "Outlet Code",
+        "Outlet Name",
+        "Division",
+        "Category Name",
+        "Movement Code",
+        "Article Code"
+      ],
+      "measures": []
+    }
+  ],
+
+  "snapshot": {
+    "source_csv": "REPLACE_WITH_FACT_TABLE.csv",
+    "date_column": "Date",
+    "dimensions": {
+      "outlet": "Outlet Code",
+      "division": "Division",
+      "category": "Category Name",
+      "movement": "Movement Code"
+    },
+    "measures": {
+      "receipt_value": "Receipt Value",
+      "invoiced_sales": "Invoiced Sales",
+      "over_receiving_incidents": "Over Receiving Incidents",
+      "under_receiving_incidents": "Under Receiving Incidents",
+      "closing_stock": "Closing Stock"
+    },
+    "detail_columns": [
+      "Date",
+      "Outlet Code",
+      "Article Code",
+      "Movement Code",
+      "Receipt Value",
+      "Invoiced Sales"
+    ]
+  }
+}
