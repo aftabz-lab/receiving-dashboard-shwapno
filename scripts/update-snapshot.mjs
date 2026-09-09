@@ -17,10 +17,17 @@ let previous = null;
 try {
   previous = JSON.parse(await readFile(new URL("../snapshot.json", import.meta.url), "utf8"));
 } catch {}
-if (previous?.ready && previous.snapshotVersion >= 2 && previous.sourceTimestamp === core.sourceTimestamp && previous.range?.endExclusive === core.range?.endExclusive) {
+// The early exit skips the rebuild when Power BI has not refreshed. It must
+// also require that the previous snapshot is actually complete, otherwise an
+// empty breakdown is preserved forever. Set FORCE_SNAPSHOT=1 to rebuild
+// unconditionally from a manual workflow run.
+const previousIsComplete = Boolean(previous?.categories?.length) && Boolean(previous?.regions?.length);
+const forceRebuild = process.env.FORCE_SNAPSHOT === "1";
+if (!forceRebuild && previousIsComplete && previous?.ready && previous.snapshotVersion >= 3 && previous.sourceTimestamp === core.sourceTimestamp && previous.range?.endExclusive === core.range?.endExclusive) {
   console.log(`Power BI has not changed since ${previous.snapshotGeneratedAt}; keeping the existing snapshot.`);
   process.exit(0);
 }
+console.log(forceRebuild ? "FORCE_SNAPSHOT set; rebuilding." : previousIsComplete ? "Rebuilding snapshot." : "Previous snapshot has empty breakdowns; rebuilding.");
 const supporting = await client.load(filters, { section: "options" });
 const outletGroups = [];
 const kpiGroups = [];
@@ -101,7 +108,7 @@ const snapshot = {
   // than adding outlet detail rows (Over Receiving Value is non-additive there).
   kpis: [sourceKpi],
   ready: true,
-  snapshotVersion: 2,
+  snapshotVersion: 3,
   snapshotGeneratedAt: new Date().toISOString(),
 };
 
