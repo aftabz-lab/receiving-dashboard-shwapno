@@ -1,6 +1,6 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-5";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-6";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
-import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-5";
+import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-6";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -61,6 +61,8 @@ const state = {
   detailDrillValue: null,
   detailRowFilters: {},
   detailFollowsIncidentScope: false,
+  detailPinnedDivision: null,
+  detailWidened: false,
   detailColumnFilters: {},
   detailColumnFilterTimer: 0,
   detailHeaderSignature: "",
@@ -1629,6 +1631,7 @@ function detailScopeLabel() {
   if (state.detailRowFilters.userCode) labels.push(`User ${state.detailRowFilters.userCode}`);
   if (state.detailRowFilters.movementCode) labels.push(`Movement ${state.detailRowFilters.movementCode}`);
   if (state.detailSourceSearch?.articleNo) labels.push(`Article ${state.detailSourceSearch.articleNo}`);
+  if (state.detailWidened) labels.push("All business divisions");
   return [...new Set(labels)].join(" · ");
 }
 
@@ -1636,8 +1639,11 @@ function currentManagementFilters() {
   const filters = detailFiltersForContext(state.detailContext);
   // The first five tables reproduce the saved Power BI "Over Receiving" page.
   // If the overview combines divisions, keep the page's saved division there.
-  if (state.detailTableNumber !== 6 && !state.detailFollowsIncidentScope && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
+  state.detailPinnedDivision = null;
+  if (state.detailTableNumber !== 6 && !state.detailFollowsIncidentScope && !state.detailWidened
+    && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
     filters.masterCategory = state.data.scope.masterCategory;
+    state.detailPinnedDivision = filters.masterCategory;
   }
   const additions = state.detailRowFilters;
   if (additions.outletCodes?.length) {
@@ -1695,11 +1701,11 @@ function normalizeManagementRows(rows) {
 }
 
 async function loadManagementTable(tableNumber, { preserveRowFilters = true } = {}) {
-  if (!preserveRowFilters) {
-    state.detailRowFilters = {};
-    state.detailFollowsIncidentScope = false;
-  }
+  // Row filters are cleared when moving between tabs, but the cross-division
+  // scope of an incident drill is a property of the drill, not of one tab.
+  if (!preserveRowFilters) state.detailRowFilters = {};
   state.detailMissingColumns = [];
+  state.detailWidened = false;
   configureManagementTable(tableNumber);
   const sequence = ++state.detailSequence;
   dom.detailLoading.hidden = false;
@@ -1707,23 +1713,37 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
   dom.detailContent.hidden = true;
 
   try {
-    const filters = currentManagementFilters();
-    const cacheKey = detailCacheKey(filters, state.detailTableNumber);
-    const cached = state.detailCache.get(cacheKey);
-    if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
-      state.detailRows = cached.rows;
-      state.detailMissingColumns = cached.missing || [];
-    } else {
+    const fetchRows = async () => {
+      const filters = currentManagementFilters();
+      const pinned = state.detailPinnedDivision;
+      const cacheKey = detailCacheKey(filters, state.detailTableNumber);
+      const cached = state.detailCache.get(cacheKey);
+      if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
+        return { rows: cached.rows, missing: cached.missing || [], pinned };
+      }
       const result = await state.client.loadManagementTable(filters, state.detailTableNumber, {
         range: state.data.range,
         scope: state.data.scope,
         mode: incidentTableType(),
       });
+      const rows = normalizeManagementRows(result.rows);
+      const missing = result.missing || [];
+      state.detailCache.set(cacheKey, { savedAt: Date.now(), rows, missing });
+      return { rows, missing, pinned };
+    };
+
+    let outcome = await fetchRows();
+    if (sequence !== state.detailSequence) return;
+    // An empty table under a pinned business division is usually the pin, not
+    // the data: widen to every division once before reporting nothing found.
+    if (!outcome.rows.length && outcome.pinned) {
+      state.detailWidened = true;
+      outcome = await fetchRows();
       if (sequence !== state.detailSequence) return;
-      state.detailRows = normalizeManagementRows(result.rows);
-      state.detailMissingColumns = result.missing || [];
-      state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows, missing: state.detailMissingColumns });
+      if (!outcome.rows.length) state.detailWidened = false;
     }
+    state.detailRows = outcome.rows;
+    state.detailMissingColumns = outcome.missing;
     if (sequence !== state.detailSequence) return;
     // Re-apply the definition now that unpublished measures are known.
     configureManagementTable(state.detailTableNumber);
@@ -1750,6 +1770,7 @@ async function openDrill(metric, context = null, rawValue = null) {
   state.detailDrillValue = finite(rawValue) ?? selectedMetricValue(metric, context);
   state.detailRowFilters = {};
   state.detailFollowsIncidentScope = false;
+  state.detailWidened = false;
   state.detailSourceSearch = null;
   window.clearTimeout(state.detailSearchTimer);
   state.detailSearch = "";
@@ -1924,7 +1945,10 @@ function renderDetail() {
   setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} rows`);
 
   if (!visible.length) {
-    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">No rows match the current management-table scope and search.</td></tr>`;
+    const searching = query || Object.values(state.detailColumnFilters).some(value => String(value || "").trim());
+    dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">${searching
+      ? "No rows match the current search. Clear the column boxes to see the full table."
+      : `The source returned no ${incidentTableType()}-receiving rows for ${escapeHtml(detailScopeLabel())}.`}</td></tr>`;
     return;
   }
 
