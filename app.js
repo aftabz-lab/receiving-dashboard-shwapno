@@ -9,6 +9,7 @@ const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v4";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = Number.POSITIVE_INFINITY;
 const DATALIST_RENDER_LIMIT = 250;
+const OUTLET_PREVIEW_LIMIT = 50;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
   dateFrom: null,
@@ -41,6 +42,7 @@ const state = {
   exceptionFocus: "over",
   incidentMode: "over",
   outletSearch: "",
+  showAllOutlets: false,
   rhoSuggestions: [],
   zonalSuggestions: [],
   outletSuggestions: [],
@@ -137,6 +139,7 @@ const dom = {
   outletTable: el("outlet-table-body"),
   exceptionSummary: el("exception-summary"),
   outletSearch: el("outlet-search"),
+  showAllOutletsButton: el("show-all-outlets"),
   detailDialog: el("detail-dialog"),
   detailLoading: el("detail-loading"),
   detailError: el("detail-error"),
@@ -1600,14 +1603,20 @@ function renderOutlets() {
   if (!state.data) return;
   const config = focusConfig[state.exceptionFocus];
   const rows = filteredRankedOutlets();
-  const visible = rows.slice(0, 50).map((row, index) => ({ ...row, __rank: index + 1 }));
+  const visibleRows = state.showAllOutlets ? rows : rows.slice(0, OUTLET_PREVIEW_LIMIT);
+  const visible = visibleRows.map((row, index) => ({ ...row, __rank: index + 1 }));
   state.visibleRows.outlet = visible;
   setExportAvailability("outlet", visible.length > 0);
   setText("exceptions-description", config.description);
   setText("outlet-table-title", config.title);
-  setText("outlet-table-note", `Showing the first ${Math.min(50, rows.length)} ranked outlets. Click any number for article details.`);
+  setText("outlet-table-note", state.showAllOutlets
+    ? `Showing all ${exact(rows.length)} ranked outlets. Click any number for article details.`
+    : `Showing the first ${Math.min(OUTLET_PREVIEW_LIMIT, rows.length)} ranked outlets. Click any number for article details.`);
   setText("outlet-result-count", `${exact(rows.length)} matching outlets`);
   setText("exception-count", compact(rows.length));
+  dom.showAllOutletsButton.hidden = rows.length <= OUTLET_PREVIEW_LIMIT;
+  dom.showAllOutletsButton.textContent = state.showAllOutlets ? "Show top 50" : "Show all outlets";
+  dom.showAllOutletsButton.setAttribute("aria-pressed", String(state.showAllOutlets));
   updateSortIndicators("outlet");
   renderExceptionSummary(rows);
 
@@ -2628,6 +2637,10 @@ dom.managementSignals.addEventListener("click", event => {
 });
 
 dom.outletSearch.addEventListener("input", event => { state.outletSearch = event.target.value; renderOutlets(); });
+dom.showAllOutletsButton.addEventListener("click", () => {
+  state.showAllOutlets = !state.showAllOutlets;
+  renderOutlets();
+});
 dom.detailSearch.addEventListener("input", event => handleDetailSearchInput(event.target.value));
 dom.detailSearch.addEventListener("change", event => handleDetailSearchInput(event.target.value, true));
 dom.detailSearch.addEventListener("keydown", event => {
@@ -2767,6 +2780,7 @@ dom.resetButton.addEventListener("click", () => {
   dom.incidentFilter.value = "over";
   dom.outletSearch.value = "";
   state.outletSearch = "";
+  state.showAllOutlets = false;
   loadDashboard();
 });
 
