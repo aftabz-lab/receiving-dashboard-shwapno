@@ -6,7 +6,7 @@ const DETAIL_CACHE_MS = 5 * 60 * 1000;
 const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v4";
 const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v3";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
-const DETAIL_ROW_LIMIT = 400;
+const DETAIL_ROW_LIMIT = Number.POSITIVE_INFINITY;
 const DATALIST_RENDER_LIMIT = 250;
 const DEFAULT_FILTERS = Object.freeze({
   days: 30,
