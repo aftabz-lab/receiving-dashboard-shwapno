@@ -937,7 +937,10 @@ export class PowerBIDataClient {
     const range = queryContext?.range
       ? { ...queryContext.range, days: Number(queryContext.range.days) || Number(filters.days) || 30 }
       : rangeForFilters(effectiveScope, filters);
-    const where = commonWhere(range, effectiveScope, filters);
+    // The movement-type list comes from the saved Over Receiving page; the
+    // caller can drop it when that page's list does not cover the rows it needs.
+    const excluded = filters.allMovementTypes ? new Set(["movement"]) : new Set();
+    const where = commonWhere(range, effectiveScope, filters, excluded);
     const table = Number(tableNumber) || 1;
     const mode = queryContext?.mode === "under" ? "under" : "over";
     // Tables 1-4 mirror the saved "Over Receiving" page; the same shapes are
@@ -977,7 +980,7 @@ export class PowerBIDataClient {
     if ((table === 6 || table === 4) && filters.masterCategory === "all") {
       const specs = effectiveScope.masterCategories.map((masterCategory, index) => ({
         key: `rows${index}`,
-        query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, { ...filters, masterCategory }), MAX_QUERY_ROWS),
+        query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, { ...filters, masterCategory }, excluded), MAX_QUERY_ROWS),
       }));
       const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
       const merged = specs.flatMap(spec => decoded[spec.key] || []);

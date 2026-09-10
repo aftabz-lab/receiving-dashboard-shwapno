@@ -1,6 +1,6 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-6";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-7";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
-import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-6";
+import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -63,6 +63,7 @@ const state = {
   detailFollowsIncidentScope: false,
   detailPinnedDivision: null,
   detailWidened: false,
+  detailRelaxMovement: false,
   detailColumnFilters: {},
   detailColumnFilterTimer: 0,
   detailHeaderSignature: "",
@@ -1632,6 +1633,7 @@ function detailScopeLabel() {
   if (state.detailRowFilters.movementCode) labels.push(`Movement ${state.detailRowFilters.movementCode}`);
   if (state.detailSourceSearch?.articleNo) labels.push(`Article ${state.detailSourceSearch.articleNo}`);
   if (state.detailWidened) labels.push("All business divisions");
+  if (state.detailRelaxMovement) labels.push("All movement types");
   return [...new Set(labels)].join(" · ");
 }
 
@@ -1640,6 +1642,7 @@ function currentManagementFilters() {
   // The first five tables reproduce the saved Power BI "Over Receiving" page.
   // If the overview combines divisions, keep the page's saved division there.
   state.detailPinnedDivision = null;
+  if (state.detailRelaxMovement) filters.allMovementTypes = true;
   if (state.detailTableNumber !== 6 && !state.detailFollowsIncidentScope && !state.detailWidened
     && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
     filters.masterCategory = state.data.scope.masterCategory;
@@ -1706,6 +1709,7 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
   if (!preserveRowFilters) state.detailRowFilters = {};
   state.detailMissingColumns = [];
   state.detailWidened = false;
+  state.detailRelaxMovement = false;
   configureManagementTable(tableNumber);
   const sequence = ++state.detailSequence;
   dom.detailLoading.hidden = false;
@@ -1734,13 +1738,29 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
 
     let outcome = await fetchRows();
     if (sequence !== state.detailSequence) return;
-    // An empty table under a pinned business division is usually the pin, not
-    // the data: widen to every division once before reporting nothing found.
+    // An empty table is usually a filter carried over from the saved Over
+    // Receiving page rather than missing data. Relax those filters one at a
+    // time, and report whichever relaxation returned rows.
     if (!outcome.rows.length && outcome.pinned) {
       state.detailWidened = true;
       outcome = await fetchRows();
       if (sequence !== state.detailSequence) return;
       if (!outcome.rows.length) state.detailWidened = false;
+    }
+    if (!outcome.rows.length) {
+      state.detailRelaxMovement = true;
+      outcome = await fetchRows();
+      if (sequence !== state.detailSequence) return;
+      if (!outcome.rows.length) {
+        // Last attempt: no division pin and no movement-type restriction.
+        state.detailWidened = true;
+        outcome = await fetchRows();
+        if (sequence !== state.detailSequence) return;
+      }
+      if (!outcome.rows.length) {
+        state.detailRelaxMovement = false;
+        state.detailWidened = false;
+      }
     }
     state.detailRows = outcome.rows;
     state.detailMissingColumns = outcome.missing;
@@ -1771,6 +1791,7 @@ async function openDrill(metric, context = null, rawValue = null) {
   state.detailRowFilters = {};
   state.detailFollowsIncidentScope = false;
   state.detailWidened = false;
+  state.detailRelaxMovement = false;
   state.detailSourceSearch = null;
   window.clearTimeout(state.detailSearchTimer);
   state.detailSearch = "";
