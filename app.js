@@ -1,6 +1,6 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-4";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-5";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
-import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-4";
+import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-5";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -283,6 +283,9 @@ function dhakaDateTime(value) {
 
 function setText(id, value, title = "") {
   const node = el(id);
+  // A missing element must never stop the rest of the dashboard rendering,
+  // for instance when a cached page is paired with a newer script.
+  if (!node) return;
   node.textContent = value;
   if (title) node.title = title;
   else node.removeAttribute("title");
@@ -889,8 +892,10 @@ function renderKpis(kpi, data) {
   const underValueTitle = el("kpi-card-under-value")?.querySelector("h3");
   if (underValueTitle) underValueTitle.textContent = exposureLabel();
   setKpi("kpi-under-value", underValue.value, underIsQuantity() ? decimalUnits : bdtExact);
-  el("kpi-over-value").dataset.drillValue = overValue.value == null ? "" : String(overValue.value);
-  el("kpi-under-value").dataset.drillValue = underValue.value == null ? "" : String(underValue.value);
+  const overValueNode = el("kpi-over-value");
+  const underValueNode = el("kpi-under-value");
+  if (overValueNode) overValueNode.dataset.drillValue = overValue.value == null ? "" : String(overValue.value);
+  if (underValueNode) underValueNode.dataset.drillValue = underValue.value == null ? "" : String(underValue.value);
   setText("kpi-under-value-note", underValueNote(kpi));
   applyIncidentModeVisibility();
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
@@ -903,8 +908,10 @@ function renderKpis(kpi, data) {
   setText("kpi-under-incidents-note", `${percentage(kpi.UnderIncidentPct)} · click for user detail`);
 
   const gapNode = el("kpi-gap");
-  gapNode.classList.toggle("is-positive", (gap ?? 0) > 0);
-  gapNode.classList.toggle("is-negative", (gap ?? 0) < 0);
+  if (gapNode) {
+    gapNode.classList.toggle("is-positive", (gap ?? 0) > 0);
+    gapNode.classList.toggle("is-negative", (gap ?? 0) < 0);
+  }
 
   setText("stock-days", finite(kpi.StockDay) == null ? "—" : Number(kpi.StockDay).toFixed(1));
   setText("over-rate", percentage(kpi.OverIncidentPct));
