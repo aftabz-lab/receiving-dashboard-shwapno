@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260909-4">
+  <link rel="stylesheet" href="./styles.css?v=20260910-2">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -74,10 +74,12 @@
         <label class="filter-field search-combo"><span>Outlet code or name</span><input id="outlet-filter" type="search" list="outlet-options" autocomplete="off" placeholder="All outlets · type to search"><datalist id="outlet-options"></datalist></label>
         <label class="filter-field search-combo"><span>Article code or name</span><input id="article-filter" type="search" list="article-options" autocomplete="off" placeholder="All articles · type to search"><datalist id="article-options"></datalist></label>
         <label class="filter-field search-combo"><span>User code</span><input id="user-filter" type="search" list="user-options" autocomplete="off" placeholder="All users · type to search"><datalist id="user-options"></datalist></label>
+        <label class="filter-field search-combo"><span>PO Number</span><input id="po-filter" type="search" inputmode="numeric" autocomplete="off" placeholder="All PO numbers · enter exact number"></label>
         <label class="filter-field search-combo"><span>Movement code</span><input id="movement-filter" type="search" list="movement-options" autocomplete="off" placeholder="All movements · type to search"><datalist id="movement-options"></datalist></label>
+        <label class="filter-field"><span>Receiving incident</span><select id="incident-filter"><option value="over" selected>Over receiving</option><option value="under">Under receiving</option></select></label>
       </div>
       <div class="filter-foot">
-        <span id="cascade-note">Each selection shortens the related RHO, Zonal, outlet, category, article, user and movement options.</span>
+        <span id="cascade-note">Each selection shortens the related RHO, Zonal, outlet, category, article, user and movement options; enter an exact PO number to search.</span>
         <span id="organization-status">Loading Zonal/RHO mapping…</span>
       </div>
     </section>
@@ -107,6 +109,8 @@
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon inventory" aria-hidden="true">□</span><h3>Inventory</h3></div><button id="kpi-inventory" class="kpi-value drill-link" type="button" data-drill-metric="Inventory">—</button><p id="kpi-inventory-note">Total inventory units</p></article>
         <article class="kpi-card risk-kpi"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div><button id="kpi-over-value" class="kpi-value drill-link" type="button" data-drill-metric="OverValue">—</button><p id="kpi-over-value-note">Source-calculated exposure</p></article>
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon outlets" aria-hidden="true">◎</span><h3>Active outlets</h3></div><button id="kpi-outlets" class="kpi-value drill-link" type="button" data-drill-metric="ActiveOutlets">—</button><p id="kpi-outlets-note">Latest stock above zero</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">↑</span><h3>Over receiving incident</h3></div><button id="kpi-over-incidents" class="kpi-value drill-link" type="button" data-drill-metric="OverIncidents">—</button><p id="kpi-over-incidents-note">Click for user detail</p></article>
+        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Under receiving incident</h3></div><button id="kpi-under-incidents" class="kpi-value drill-link" type="button" data-drill-metric="UnderIncidents">—</button><p id="kpi-under-incidents-note">Click for user detail</p></article>
       </section>
 
       <section class="support-strip" aria-label="Supporting operational metrics">
@@ -193,6 +197,7 @@
           <button type="button" data-management-table="3">Table 3 <span>Outlet</span></button>
           <button type="button" data-management-table="4">Table 4 <span>Category</span></button>
           <button type="button" data-management-table="5">Table 5 <span>PO detail</span></button>
+          <button type="button" data-management-table="6">Table 6 <span>User incidents</span></button>
         </nav>
         <section id="detail-summary" class="detail-summary" aria-label="Selected metric summary"></section>
         <p id="detail-measure-note" class="detail-measure-note"><strong>Calculation rule:</strong> the selected Power BI total is retained exactly; context-sensitive values are not rebuilt by adding visible rows.</p>
@@ -201,7 +206,7 @@
           <div class="detail-toolbar-actions"><span id="detail-sort-status" class="sort-status" title="Click a column header to sort; Shift+click to add a second or third sort">Sorted by source value ↓</span><span id="detail-result-count" class="result-count">—</span><button class="csv-button" type="button" data-export-table="detail" disabled>Visible CSV</button></div>
         </div>
         <div class="table-scroll detail-table-scroll">
-          <table class="executive-table detail-table sortable-table">
+          <table id="detail-table-grid" class="executive-table detail-table sortable-table">
             <thead><tr id="detail-table-head"><th scope="col">Loading columns…</th></tr></thead>
             <tbody id="detail-table-body"></tbody>
           </table>
@@ -212,6 +217,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260910-1"></script>
+  <script type="module" src="./app.js?v=20260910-2"></script>
 </body>
 </html>

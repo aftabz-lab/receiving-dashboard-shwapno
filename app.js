@@ -1,4 +1,4 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260909-7";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-2";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -20,6 +20,7 @@ const DEFAULT_FILTERS = Object.freeze({
   outletCode: "all",
   articleNo: "all",
   userCode: "all",
+  poNumber: "all",
   movementCode: "all",
 });
 
@@ -37,6 +38,7 @@ const state = {
   filters: { ...DEFAULT_FILTERS },
   activeView: "overview",
   exceptionFocus: "over",
+  incidentMode: "over",
   outletSearch: "",
   rhoSuggestions: [],
   zonalSuggestions: [],
@@ -93,7 +95,9 @@ const dom = {
   outletFilter: el("outlet-filter"),
   articleFilter: el("article-filter"),
   userFilter: el("user-filter"),
+  poFilter: el("po-filter"),
   movementFilter: el("movement-filter"),
+  incidentFilter: el("incident-filter"),
   outletOptions: el("outlet-options"),
   articleOptions: el("article-options"),
   userOptions: el("user-options"),
@@ -124,6 +128,7 @@ const dom = {
   detailSearch: el("detail-search"),
   detailTabs: el("management-table-tabs"),
   detailMeasureNote: el("detail-measure-note"),
+  detailTableGrid: el("detail-table-grid"),
   detailHead: el("detail-table-head"),
   detailTable: el("detail-table-body"),
 };
@@ -353,7 +358,7 @@ async function writeFilteredSnapshot(filters, sourceTimestamp, data) {
 
 function snapshotMatchesCurrentFilters(snapshot) {
   if (!snapshot?.range) return false;
-  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "poNumber", "movementCode"];
   if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return false;
   if (state.filters.dateFrom && state.filters.dateTo) {
     return state.filters.dateFrom === snapshot.range.start && state.filters.dateTo === inclusiveEndIso(snapshot.range);
@@ -363,7 +368,7 @@ function snapshotMatchesCurrentFilters(snapshot) {
 
 function embeddedRangeSnapshot(snapshot) {
   if (!Array.isArray(snapshot?.cachedRanges)) return null;
-  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "movementCode"];
+  const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "poNumber", "movementCode"];
   if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return null;
   let start = state.filters.dateFrom;
   let end = state.filters.dateTo;
@@ -495,6 +500,7 @@ function buildPowerBIFilters() {
     category: state.filters.category,
     articleNo: state.filters.articleNo,
     userCode: state.filters.userCode,
+    poNumber: state.filters.poNumber,
     movementCode: state.filters.movementCode,
     region: "all",
   };
@@ -596,7 +602,9 @@ function updateCascadingOptions() {
   dom.outletFilter.value = state.filters.outletCode === "all" ? "" : canonicalOutletLabel(state.filters.outletCode);
   dom.articleFilter.value = state.filters.articleNo === "all" ? "" : canonicalArticleLabel(state.filters.articleNo);
   dom.userFilter.value = state.filters.userCode === "all" ? "" : state.filters.userCode;
+  dom.poFilter.value = state.filters.poNumber === "all" ? "" : state.filters.poNumber;
   dom.movementFilter.value = state.filters.movementCode === "all" ? "" : state.filters.movementCode;
+  dom.incidentFilter.value = state.incidentMode;
   updateActiveFilterSummary();
 }
 
@@ -612,6 +620,7 @@ function activeFilterLabels() {
   if (state.filters.outletCode !== "all") labels.push(`Outlet: ${state.filters.outletCode}`);
   if (state.filters.articleNo !== "all") labels.push(`Article: ${state.filters.articleNo}`);
   if (state.filters.userCode !== "all") labels.push(`User: ${state.filters.userCode}`);
+  if (state.filters.poNumber !== "all") labels.push(`PO: ${state.filters.poNumber}`);
   if (state.filters.movementCode !== "all") labels.push(`Movement: ${state.filters.movementCode}`);
   return labels;
 }
@@ -633,7 +642,7 @@ function setLoading(loading) {
   dom.loadingBar.classList.toggle("is-active", loading);
   dom.refreshButton.disabled = loading;
   dom.refreshButton.classList.toggle("is-refreshing", loading);
-  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.movementFilter, dom.resetButton]
+  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.poFilter, dom.movementFilter, dom.incidentFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
 
   if (loading) {
@@ -714,24 +723,41 @@ function setKpi(id, value, formatter = compact) {
   setText(id, formatter(value), finite(value) == null ? "" : nf.format(value));
 }
 
+function resolvedOverValue(kpi, data) {
+  const sourceValue = finite(kpi?.OverValue);
+  const groupedValues = (data?.categories || []).map(row => finite(row.OverValue)).filter(value => value != null);
+  const groupedValue = groupedValues.length ? groupedValues.reduce((total, value) => total + value, 0) : null;
+  const useGroupedValue = groupedValue != null && groupedValue !== 0 && (sourceValue == null || sourceValue === 0);
+  return { value: useGroupedValue ? groupedValue : sourceValue, grouped: useGroupedValue };
+}
+
 function renderKpis(kpi, data) {
   const received = finite(kpi.Receiving);
   const sales = finite(kpi.Sales);
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
+  const overValue = resolvedOverValue(kpi, data);
+
+  data.resolvedOverValue = overValue.value;
+  data.overValueUsesGroupedContext = overValue.grouped;
 
   setKpi("kpi-receiving", received, exact);
   setKpi("kpi-sales", sales, exact);
   setKpi("kpi-gap", gap, signedExact);
   setKpi("kpi-inventory", kpi.Inventory, exact);
-  setKpi("kpi-over-value", kpi.OverValue, bdtExact);
+  setKpi("kpi-over-value", overValue.value, bdtExact);
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
+  setKpi("kpi-over-incidents", kpi.OverIncidents, exact);
+  setKpi("kpi-under-incidents", kpi.UnderIncidents, exact);
+  el("kpi-over-value").dataset.drillValue = overValue.value == null ? "" : String(overValue.value);
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
   setText("kpi-gap-note", ratio == null ? "Received minus sold" : `Receipts equal ${percentage(ratio)} of sales`);
   setText("kpi-inventory-note", "Source measure · click for detail");
   setText("kpi-over-value-note", `${exact(kpi.OverIncidents)} incidents · click for detail`);
   setText("kpi-outlets-note", "Click to open the outlet list");
+  setText("kpi-over-incidents-note", `${percentage(kpi.OverIncidentPct)} · click for user detail`);
+  setText("kpi-under-incidents-note", `${percentage(kpi.UnderIncidentPct)} · click for user detail`);
 
   const gapNode = el("kpi-gap");
   gapNode.classList.toggle("is-positive", (gap ?? 0) > 0);
@@ -823,7 +849,7 @@ function positionForGap(gap) {
 }
 
 const sortLabels = {
-  Region: "division", Outlet: "outlet", RHO: "RHO", Zonal: "Zonal", ArticleNo: "article code", ArticleName: "article name",
+  Region: "division", Outlet: "outlet", OutletCode: "outlet code", RHO: "RHO", Zonal: "Zonal", ArticleNo: "article code", ArticleName: "article name",
   MasterCategory: "business division", Category: "category", Receiving: "received", Sales: "sold", Gap: "balance",
   Inventory: "inventory", StockDay: "stock days", OverValue: "over value", OverIncidents: "over incidents",
   OverIncidentPct: "over-receiving rate", UnderIncidents: "under incidents", UnderIncidentPct: "under-receiving rate",
@@ -916,6 +942,31 @@ const managementTableDefinitions = {
     ],
   },
 };
+
+function incidentTableType() {
+  if (["UnderIncidents", "UnderIncidentPct"].includes(state.detailMetric)) return "under";
+  if (["OverIncidents", "OverIncidentPct"].includes(state.detailMetric)) return "over";
+  return state.incidentMode;
+}
+
+function managementTableDefinition(tableNumber) {
+  if (Number(tableNumber) !== 6) return managementTableDefinitions[tableNumber] || managementTableDefinitions[1];
+  const under = incidentTableType() === "under";
+  const prefix = under ? "Under" : "Over";
+  return {
+    title: `${prefix} Receiving Incidents by User`,
+    defaultSort: `${prefix}Incidents`,
+    columns: [
+      { key: "OutletCode", label: "Outlet Code" },
+      { key: "OutletName", label: "Outlet Name" },
+      { key: "RHO", label: "RHO" },
+      { key: "Zonal", label: "Zonal" },
+      { key: "CreatedBy", label: "User Code" },
+      { key: `${prefix}Incidents`, label: `${prefix} Receiving Incidents`, numeric: true },
+      { key: `${prefix}IncidentPct`, label: `${prefix} Receiving Incident%`, numeric: true, decimals: 2 },
+    ],
+  };
+}
 
 function csvColumns(table) {
   if (table === "region") return [
@@ -1221,14 +1272,15 @@ function selectedMetricValue(metric, context) {
   if (context?.type === "outlet") return valueFor((state.data.enrichedOutlets || []).find(row => normalizeOutletCode(row.OutletCode) === normalizeOutletCode(context.value)));
   if (context?.type === "region") return valueFor((state.data.regions || []).find(row => String(row.Region ?? "__UNASSIGNED__") === String(context.value)));
   if (context?.type === "category") return valueFor((state.data.categories || []).find(row => String(row.Category) === String(context.value)));
+  if (metric === "OverValue" && finite(state.data.resolvedOverValue) != null) return finite(state.data.resolvedOverValue);
   return valueFor(state.data.kpis?.[0]);
 }
 
 function initialManagementTable(metric, context) {
+  if (["OverIncidents", "OverIncidentPct", "UnderIncidents", "UnderIncidentPct", "Incidents"].includes(metric)) return 6;
   if (context?.type === "category") return 4;
   if (context?.type === "outlet") return 1;
   if (context?.type === "region" || metric === "ActiveOutlets" || metric === "OverValue") return 3;
-  if (["OverIncidents", "OverIncidentPct", "Incidents"].includes(metric)) return 4;
   return 1;
 }
 
@@ -1245,6 +1297,7 @@ function detailScopeLabel() {
   if (state.filters.category !== "all" && state.filters.category !== state.detailContext?.value) labels.push(state.filters.category);
   if (state.filters.articleNo !== "all") labels.push(`Article ${state.filters.articleNo}`);
   if (state.filters.userCode !== "all") labels.push(`User ${state.filters.userCode}`);
+  if (state.filters.poNumber !== "all") labels.push(`PO ${state.filters.poNumber}`);
   if (state.filters.movementCode !== "all") labels.push(`Movement ${state.filters.movementCode}`);
   if (state.detailRowFilters.outletCodes?.length) labels.push(`Outlet ${state.detailRowFilters.outletCodes.join(", ")}`);
   if (state.detailRowFilters.category) labels.push(state.detailRowFilters.category);
@@ -1257,9 +1310,9 @@ function detailScopeLabel() {
 
 function currentManagementFilters() {
   const filters = detailFiltersForContext(state.detailContext);
-  // These five tables reproduce the saved Power BI "Over Receiving" page.
-  // If the overview combines divisions, keep the page's saved division here.
-  if (filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
+  // The first five tables reproduce the saved Power BI "Over Receiving" page.
+  // If the overview combines divisions, keep the page's saved division there.
+  if (state.detailTableNumber !== 6 && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
     filters.masterCategory = state.data.scope.masterCategory;
   }
   const additions = state.detailRowFilters;
@@ -1267,7 +1320,7 @@ function currentManagementFilters() {
     filters.region = "all";
     filters.outletCodes = additions.outletCodes;
   }
-  for (const key of ["category", "articleNo", "userCode", "movementCode"]) {
+  for (const key of ["category", "articleNo", "userCode", "poNumber", "movementCode"]) {
     if (additions[key]) filters[key] = additions[key];
   }
   if (state.detailSourceSearch?.articleNo) {
@@ -1280,15 +1333,18 @@ function currentManagementFilters() {
 }
 
 function configureManagementTable(tableNumber) {
-  const table = managementTableDefinitions[tableNumber] || managementTableDefinitions[1];
+  const table = managementTableDefinition(tableNumber);
   state.detailTableNumber = Number(tableNumber) || 1;
   state.detailColumns = table.columns;
   state.sorts.detail = { key: table.defaultSort, direction: table.defaultDirection || "desc" };
+  dom.detailTableGrid.classList.toggle("incident-user-table", state.detailTableNumber === 6);
   setText("detail-title", table.title);
   setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
   dom.detailSearch.placeholder = state.detailTableNumber === 5
     ? "Search article, PO, movement, user or date"
-    : "Search any value in this management table";
+    : state.detailTableNumber === 6
+      ? "Search outlet, RHO, Zonal or user"
+      : "Search any value in this management table";
   dom.detailTabs.querySelectorAll("[data-management-table]").forEach(button => {
     const active = Number(button.dataset.managementTable) === state.detailTableNumber;
     button.classList.toggle("is-active", active);
@@ -1299,7 +1355,15 @@ function configureManagementTable(tableNumber) {
 function normalizeManagementRows(rows) {
   return (rows || []).map(row => {
     const inferredCode = String(row.OutletName || "").match(/^([A-Za-z]\d{3,})\b/)?.[1] || "";
-    return { ...row, OutletCode: normalizeOutletCode(row.OutletCode || inferredCode) };
+    const outletCode = normalizeOutletCode(row.OutletCode || inferredCode);
+    const organization = organizationForCode(outletCode);
+    return {
+      ...row,
+      OutletCode: outletCode || null,
+      OutletName: organization?.OutletName || row.OutletName || (outletCode ? outletCode : "Unassigned / HO"),
+      RHO: organization?.RHO || "Not mapped",
+      Zonal: organization?.Zonal || "Not mapped",
+    };
   });
 }
 
@@ -1341,6 +1405,9 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
 async function openDrill(metric, context = null, rawValue = null) {
   if (!state.data) return;
   const definition = metricDefinition(metric);
+  if (String(metric).startsWith("Under")) state.incidentMode = "under";
+  else if (String(metric).startsWith("Over") && metric !== "OverValue") state.incidentMode = "over";
+  dom.incidentFilter.value = state.incidentMode;
   state.detailMetric = metric;
   state.detailContext = context;
   state.detailDrillValue = finite(rawValue) ?? selectedMetricValue(metric, context);
@@ -1356,15 +1423,18 @@ async function openDrill(metric, context = null, rawValue = null) {
 function renderDetailSummary(totalRows) {
   const definition = metricDefinition(state.detailMetric);
   const value = state.detailDrillValue == null ? "—" : definition.formatter(state.detailDrillValue);
+  const overValueGrouped = state.detailMetric === "OverValue" && !state.detailContext && state.data?.overValueUsesGroupedContext;
   const cards = [
-    [state.detailMetric === "OverValue" ? "Source DAX total" : "Clicked source value", value],
+    [overValueGrouped ? "Grouped source value" : state.detailMetric === "OverValue" ? "Source DAX total" : "Clicked source value", value],
     ["Returned rows", exact(totalRows)],
     ["Data window", dateRangeLabel(state.data.range)],
     ["Selected scope", detailScopeLabel()],
   ];
   dom.detailSummary.innerHTML = cards.map(([label, cardValue]) => `<div class="detail-summary-card"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(cardValue)}">${escapeHtml(cardValue)}</strong></div>`).join("");
-  dom.detailMeasureNote.innerHTML = state.detailMetric === "OverValue"
-    ? "<strong>Why totals can differ:</strong> Power BI’s Over Receiving Value is a context-sensitive DAX measure. This view preserves the selected source total exactly; outlet and article rows are drill-down values and are never added to replace it."
+  dom.detailMeasureNote.innerHTML = overValueGrouped
+    ? "<strong>Calculation rule:</strong> Power BI returns a blank grand total for Over Receiving Value, so the headline uses the complete category-level source results for the selected scope; visible drill-down rows do not recalculate it."
+    : state.detailMetric === "OverValue"
+      ? "<strong>Why totals can differ:</strong> Power BI’s Over Receiving Value is a context-sensitive DAX measure. This view preserves the selected source total exactly; outlet and article rows are drill-down values and are never added to replace it."
     : "<strong>Calculation rule:</strong> the clicked Power BI value and every management row are queried in the same date and filter context; displayed rows are not used to recalculate the source headline.";
 }
 
@@ -1420,6 +1490,9 @@ function managementAction(row, column) {
     if (column.key === "MovementType" && row.MovementType) return { type: "movement", value: row.MovementType, label: `Movement ${row.MovementType}` };
     if (column.key === "CreatedBy" && row.CreatedBy) return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
   }
+  if (table === 6 && column.key === "CreatedBy" && row.CreatedBy) {
+    return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
+  }
   return null;
 }
 
@@ -1435,7 +1508,11 @@ function managementCell(row, column) {
 
 function renderDetail() {
   const query = state.detailSearch.trim().toLocaleLowerCase();
-  const filtered = state.detailRows.filter(row => !query || [row.OutletCode, ...state.detailColumns.map(column => managementDisplay(row, column))]
+  const incidentKey = incidentTableType() === "under" ? "UnderIncidents" : "OverIncidents";
+  const tableRows = state.detailTableNumber === 6
+    ? state.detailRows.filter(row => (finite(row[incidentKey]) ?? 0) > 0)
+    : state.detailRows;
+  const filtered = tableRows.filter(row => !query || [row.OutletCode, ...state.detailColumns.map(column => managementDisplay(row, column))]
     .some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
   const sorted = sortRows(filtered, "detail");
   const visible = sorted.slice(0, DETAIL_ROW_LIMIT);
@@ -1443,7 +1520,7 @@ function renderDetail() {
   setExportAvailability("detail", visible.length > 0);
   renderDetailHeader();
   updateSortIndicators("detail");
-  renderDetailSummary(state.detailRows.length);
+  renderDetailSummary(tableRows.length);
   setText("detail-result-count", visible.length < sorted.length ? `Showing ${exact(visible.length)} of ${exact(sorted.length)} matches` : `${exact(sorted.length)} rows`);
 
   if (!visible.length) {
@@ -1451,7 +1528,10 @@ function renderDetail() {
     return;
   }
 
-  dom.detailTable.innerHTML = visible.map(row => `<tr>${state.detailColumns.map(column => `<td data-column-key="${escapeHtml(column.key)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}>${managementCell(row, column)}</td>`).join("")}</tr>`).join("");
+  dom.detailTable.innerHTML = visible.map(row => `<tr>${state.detailColumns.map(column => {
+    const display = managementDisplay(row, column);
+    return `<td data-column-key="${escapeHtml(column.key)}" title="${escapeHtml(display)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}>${managementCell(row, column)}</td>`;
+  }).join("")}</tr>`).join("");
 }
 
 function detailArticleCandidate(value) {
@@ -1759,6 +1839,41 @@ function applyCodeSearch(type) {
   loadDashboard();
 }
 
+function applyPoSearch() {
+  const value = dom.poFilter.value.trim();
+  if (!value) {
+    dom.poFilter.removeAttribute("aria-invalid");
+    if (state.filters.poNumber !== "all") {
+      state.filters.poNumber = "all";
+      loadDashboard();
+    }
+    return;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/.test(value)) {
+    dom.poFilter.setAttribute("aria-invalid", "true");
+    dom.cascadeNote.textContent = "Enter one exact PO number without spaces, then press Enter.";
+    return;
+  }
+  dom.poFilter.removeAttribute("aria-invalid");
+  state.filters.poNumber = value;
+  dom.cascadeNote.textContent = `Checking exact PO number ${value} in the selected date and outlet scope.`;
+  loadDashboard();
+}
+
+function selectIncidentMode(mode) {
+  state.incidentMode = mode === "under" ? "under" : "over";
+  state.exceptionFocus = state.incidentMode;
+  dom.incidentFilter.value = state.incidentMode;
+  state.sorts.outlet = { key: focusConfig[state.exceptionFocus].field, direction: "desc" };
+  renderOutlets();
+  if (dom.detailDialog.open && state.detailTableNumber === 6) {
+    state.detailMetric = state.incidentMode === "under" ? "UnderIncidents" : "OverIncidents";
+    state.detailDrillValue = selectedMetricValue(state.detailMetric, state.detailContext);
+    configureManagementTable(6);
+    renderDetail();
+  }
+}
+
 function setTheme(theme) {
   const mode = theme === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = mode;
@@ -1785,6 +1900,10 @@ document.querySelectorAll(".view-tab").forEach(tab => {
 document.querySelectorAll(".focus-button").forEach(button => {
   button.addEventListener("click", () => {
     state.exceptionFocus = button.dataset.focus;
+    if (["over", "under"].includes(state.exceptionFocus)) {
+      state.incidentMode = state.exceptionFocus;
+      dom.incidentFilter.value = state.incidentMode;
+    }
     const field = focusConfig[state.exceptionFocus].field;
     state.sorts.outlet = { key: field, direction: "desc" };
     renderOutlets();
@@ -1955,12 +2074,27 @@ dom.regionFilter.addEventListener("change", event => {
   input.addEventListener("focus", () => refreshSearchDatalist(type === "userCode" ? dom.userOptions : dom.movementOptions, type === "userCode" ? state.userSuggestions : state.movementSuggestions, input.value));
 });
 
+dom.poFilter.addEventListener("change", applyPoSearch);
+dom.poFilter.addEventListener("keydown", event => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  applyPoSearch();
+});
+dom.poFilter.addEventListener("input", () => {
+  if (!dom.poFilter.value && state.filters.poNumber !== "all") applyPoSearch();
+  else dom.cascadeNote.textContent = "Enter an exact PO number, then press Enter to search.";
+});
+
+dom.incidentFilter.addEventListener("change", event => selectIncidentMode(event.target.value));
+
 dom.resetButton.addEventListener("click", () => {
   if (dateApplyTimer) {
     window.clearTimeout(dateApplyTimer);
     dateApplyTimer = 0;
   }
   state.filters = { ...DEFAULT_FILTERS };
+  state.incidentMode = "over";
+  state.exceptionFocus = "over";
   dom.periodFilter.value = "30";
   dom.fromDateFilter.removeAttribute("aria-invalid");
   dom.toDateFilter.removeAttribute("aria-invalid");
@@ -1972,7 +2106,9 @@ dom.resetButton.addEventListener("click", () => {
   dom.outletFilter.value = "";
   dom.articleFilter.value = "";
   dom.userFilter.value = "";
+  dom.poFilter.value = "";
   dom.movementFilter.value = "";
+  dom.incidentFilter.value = "over";
   dom.outletSearch.value = "";
   state.outletSearch = "";
   loadDashboard();

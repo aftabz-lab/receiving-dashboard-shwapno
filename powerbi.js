@@ -347,6 +347,17 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
     });
   }
 
+  if (!excluded.has("po") && filters.poNumber && filters.poNumber !== "all") {
+    conditions.push({
+      Condition: {
+        In: {
+          Expressions: [field("r", "PO Clean")],
+          Values: [[literal(stringLiteral(filters.poNumber))]],
+        },
+      },
+    });
+  }
+
   return conditions;
 }
 
@@ -422,6 +433,50 @@ function composeKpiContexts(rows, fallback = {}) {
     OverValue: preferSource("OverValue", sumPresent("OverValue")),
     ActiveOutlets: numeric(fallback.ActiveOutlets),
   };
+}
+
+function combineIncidentUserContexts(rows) {
+  const numeric = value => value == null || value === "" ? null : (Number.isFinite(Number(value)) ? Number(value) : null);
+  const groups = new Map();
+  for (const row of rows) {
+    const outletCode = String(row.OutletCode ?? "").trim();
+    const createdBy = String(row.CreatedBy ?? "").trim();
+    const key = `${outletCode}\u001f${createdBy}`;
+    const current = groups.get(key) || {
+      OutletCode: outletCode || null,
+      OutletName: row.OutletName || null,
+      CreatedBy: createdBy || null,
+      OverIncidents: 0,
+      UnderIncidents: 0,
+      _overPopulation: 0,
+      _underPopulation: 0,
+      _overSeen: false,
+      _underSeen: false,
+    };
+    if (!current.OutletName && row.OutletName) current.OutletName = row.OutletName;
+    for (const prefix of ["Over", "Under"]) {
+      const count = numeric(row[`${prefix}Incidents`]);
+      const percent = numeric(row[`${prefix}IncidentPct`]);
+      if (count != null) {
+        current[`${prefix}Incidents`] += count;
+        current[`_${prefix.toLowerCase()}Seen`] = true;
+      }
+      if (count != null && percent > 0) current[`_${prefix.toLowerCase()}Population`] += count / (percent / 100);
+    }
+    groups.set(key, current);
+  }
+  return [...groups.values()].map(row => {
+    for (const prefix of ["Over", "Under"]) {
+      const lower = prefix.toLowerCase();
+      if (!row[`_${lower}Seen`]) row[`${prefix}Incidents`] = null;
+      row[`${prefix}IncidentPct`] = row[`_${lower}Population`] > 0
+        ? (row[`${prefix}Incidents`] / row[`_${lower}Population`]) * 100
+        : null;
+      delete row[`_${lower}Population`];
+      delete row[`_${lower}Seen`];
+    }
+    return row;
+  });
 }
 
 function rangeForDays(scope, days) {
@@ -722,11 +777,21 @@ export class PowerBIDataClient {
       3: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), ...operational, measure("rank", "sorting", "Sorting")],
       4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), measure("m", "Over Receiving", "OverReceiving"), measure("m", "Over Receiving Value", "OverValue"), measure("rank", "Over Receiving Score", "OverScore"), measure("vis", "Over Receiving Score Icon", "StatusIcon"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct")],
       5: [column("a", "ArticleNo", "ArticleNo"), column("r", "PO Clean", "PONumber"), column("r", "movement_type", "MovementType"), column("u", "created_by", "CreatedBy"), column("u", "document_date", "PODate"), column("r", "posting_date", "ReceivingDate"), sum("r", "qty_in_unit_of_entry", "Receiving")],
+      6: [column("o", "OutletCode", "OutletCode"), column("o", "OutletName", "OutletName"), column("u", "created_by", "CreatedBy"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct"), measure("m", "Under Receiving Incidents", "UnderIncidents"), measure("m", "Under Receiving Incident%", "UnderIncidentPct")],
     };
     const table = Number(tableNumber) || 1;
     const select = definitions[table] || definitions[1];
+    if (table === 6 && filters.masterCategory === "all") {
+      const specs = effectiveScope.masterCategories.map((masterCategory, index) => ({
+        key: `rows${index}`,
+        query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, { ...filters, masterCategory }), MAX_QUERY_ROWS),
+      }));
+      const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
+      const rows = combineIncidentUserContexts(specs.flatMap(spec => decoded[spec.key] || []));
+      return { rows, range, queryTimestamp };
+    }
     const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, MAX_QUERY_ROWS) }];
     const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
-    return { rows: decoded.rows, range, queryTimestamp };
+    return { rows: table === 6 ? combineIncidentUserContexts(decoded.rows) : decoded.rows, range, queryTimestamp };
   }
 }
