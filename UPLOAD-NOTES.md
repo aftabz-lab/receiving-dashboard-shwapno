@@ -56,18 +56,24 @@ Both sheets follow the selected mode, so Under receiving exports Under sheets.
 Every other export on the dashboard is still a CSV, unchanged. The workbook is
 built in the browser with no external library or CDN.
 
-## One thing to check on the Power BI side
+## The Under measures in your model
 
-The published model exposes **Over Receiving Value**, but no **Under Receiving
-Value** measure appears anywhere in the report or the snapshot. The dashboard
-now detects this at runtime:
+Confirmed from the report's Under Receiving page: the model publishes
+**Under Receiving** and **Under Receiving Score**, but no **Under Receiving
+Value** and no **Under Receiving Score Icon**. The dashboard now matches that
+exactly:
 
-- If the mirrored Under measures exist, everything works symmetrically.
-- If they do not, the Under-receiving value card shows `—` with the note "Under-receiving
-  value is not published in the source model", the division table shows `—` in
-  that column, and the Under versions of Tables 1–4 simply drop those columns and
-  sort by Under incidents instead. Nothing errors out.
+- The Under tables show `Under Receiving` and `Under Receiving Score`, with no
+  empty value or status columns, laid out like the published page.
+- `Under Receiving` is shown to two decimals, because the source returns a
+  negative fractional quantity (-1,051.82).
+- The Under tables sort by `Under Receiving Score` descending, as the published
+  page does. The Over tables still sort by `Over Receiving Value`.
+- The pic 3 card is titled **Under-receiving units** and shows the Under
+  Receiving quantity, since there is no monetary measure to show. The division
+  column reads **Under units** to match.
 
-If you add `Under Receiving Value` (and optionally `Under Receiving`, `Under
-Receiving Score`, `Under Receiving Score Icon`) to the model and republish, the
-dashboard picks them up on the next load with no further changes here.
+Everything is resolved at runtime, so if `Under Receiving Value` is ever added
+to the model and republished, the card retitles itself to "Under-receiving
+value", switches to taka formatting and the value column reappears on the Under
+tables, with no further changes here.

@@ -1,6 +1,6 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-3";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-4";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
-import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-3";
+import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-4";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -66,7 +66,7 @@ const state = {
   detailHeaderSignature: "",
   detailMissingColumns: [],
   detailExportBusy: false,
-  underValue: { key: "", status: "idle", kpi: null, categories: new Map(), regions: new Map() },
+  underValue: { key: "", status: "idle", kind: "value", kpi: null, categories: new Map(), regions: new Map() },
   detailSourceSearch: null,
   detailSearchTimer: 0,
   detailSearch: "",
@@ -721,6 +721,27 @@ function underValueFor(grain, name) {
   return map ? finite(map.get(String(name ?? ""))) : null;
 }
 
+function underIsQuantity() {
+  return isUnderMode() && state.underValue.kind === "quantity";
+}
+
+// The Under side of the published model stops at a quantity, so the exposure
+// column and card are labelled and formatted for whichever measure exists.
+function exposureLabel({ short = false } = {}) {
+  if (!isUnderMode()) return short ? "Over value" : "Over-receiving value";
+  if (underIsQuantity()) return short ? "Under units" : "Under-receiving units";
+  return short ? "Under value" : "Under-receiving value";
+}
+
+function exposureDisplay(value) {
+  return underIsQuantity() ? decimalUnits(value) : bdt(value);
+}
+
+function decimalUnits(value) {
+  const number = finite(value);
+  return number == null ? "—" : number.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function applyIncidentModeVisibility() {
   const under = isUnderMode();
   if (dom.overValueCard) dom.overValueCard.hidden = under;
@@ -734,13 +755,15 @@ function applyModeToRegionHeader() {
   if (!button) return;
   const previousKey = button.dataset.sortKey;
   const key = modeValueKey();
-  if (previousKey === key) return;
+  const label = exposureLabel({ short: true });
+  if (previousKey === key && button.dataset.modeLabel === label) return;
+  button.dataset.modeLabel = label;
   if (state.sorts.region.key === previousKey) state.sorts.region = { ...state.sorts.region, key };
   if (state.sorts.region.secondary) {
     state.sorts.region.secondary = state.sorts.region.secondary.map(item => (item.key === previousKey ? { ...item, key } : item));
   }
   button.dataset.sortKey = key;
-  button.innerHTML = `${isUnderMode() ? "Under value" : "Over value"} <span></span>`;
+  button.innerHTML = `${escapeHtml(label)} <span></span>`;
 }
 
 function underValueRequestKey() {
@@ -756,7 +779,7 @@ async function ensureUnderValues({ force = false } = {}) {
   const key = underValueRequestKey();
   if (!force && state.underValue.key === key && state.underValue.status !== "idle") return;
 
-  state.underValue = { key, status: "loading", kpi: null, categories: new Map(), regions: new Map() };
+  state.underValue = { key, status: "loading", kind: "value", kpi: null, categories: new Map(), regions: new Map() };
   renderKpis(state.data.kpis?.[0] || {}, state.data);
 
   try {
@@ -768,6 +791,7 @@ async function ensureUnderValues({ force = false } = {}) {
     state.underValue = {
       key,
       status: result.supported ? "ready" : "missing",
+      kind: result.kind === "quantity" ? "quantity" : "value",
       kpi: result.kpi,
       categories: result.categories || new Map(),
       regions: result.regions || new Map(),
@@ -775,7 +799,7 @@ async function ensureUnderValues({ force = false } = {}) {
   } catch (error) {
     console.warn("Under-receiving value could not be loaded", error);
     if (state.underValue.key !== key) return;
-    state.underValue = { key, status: "error", kpi: null, categories: new Map(), regions: new Map() };
+    state.underValue = { key, status: "error", kind: "value", kpi: null, categories: new Map(), regions: new Map() };
   }
   if (state.data) renderAll(state.data);
 }
@@ -835,8 +859,9 @@ function resolvedUnderValue() {
 
 function underValueNote(kpi) {
   if (state.underValue.status === "loading") return "Reading the source measure…";
-  if (state.underValue.status === "missing") return "Under-receiving value is not published in the source model";
+  if (state.underValue.status === "missing") return "No under-receiving measure is published in the source model";
   if (state.underValue.status === "error") return "Source value unavailable · switch back to reload";
+  if (underIsQuantity()) return `Source-calculated shortfall · ${exact(kpi?.UnderIncidents)} incidents · click for detail`;
   return `${exact(kpi?.UnderIncidents)} incidents · click for detail`;
 }
 
@@ -861,7 +886,9 @@ function renderKpis(kpi, data) {
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setKpi("kpi-over-incidents", kpi.OverIncidents, exact);
   setKpi("kpi-under-incidents", kpi.UnderIncidents, exact);
-  setKpi("kpi-under-value", underValue.value, bdtExact);
+  const underValueTitle = el("kpi-card-under-value")?.querySelector("h3");
+  if (underValueTitle) underValueTitle.textContent = exposureLabel();
+  setKpi("kpi-under-value", underValue.value, underIsQuantity() ? decimalUnits : bdtExact);
   el("kpi-over-value").dataset.drillValue = overValue.value == null ? "" : String(overValue.value);
   el("kpi-under-value").dataset.drillValue = underValue.value == null ? "" : String(underValue.value);
   setText("kpi-under-value-note", underValueNote(kpi));
@@ -980,7 +1007,7 @@ const sortLabels = {
 
 function incidentManagementColumns(prefix) {
   return [
-    { key: `${prefix}Receiving`, label: `${prefix} Receiving`, numeric: true },
+    { key: `${prefix}Receiving`, label: `${prefix} Receiving`, numeric: true, ...(prefix === "Under" ? { decimals: 2 } : {}) },
     { key: `${prefix}Value`, label: `${prefix} Receiving Value`, numeric: true },
     { key: `${prefix}Score`, label: `${prefix} Receiving Score`, numeric: true, decimals: 2 },
     { key: "StatusIcon", label: ".", status: true },
@@ -1096,11 +1123,16 @@ function managementTableDefinition(tableNumber) {
   // those columns are dropped rather than shown as empty ones.
   const missing = new Set(under ? state.detailMissingColumns : []);
   const columns = definition.columns.filter(column => !missing.has(column.key));
-  const defaultSort = columns.some(column => column.key === definition.defaultSort)
-    ? definition.defaultSort
-    : (columns.find(column => column.key === `${prefix}Incidents`)?.key
-      || columns.find(column => column.numeric)?.key
-      || columns[0].key);
+  // The published page sorts the Over tables by Over Receiving Value and the
+  // Under tables by Under Receiving Score; fall back down that chain to
+  // whichever measure this model actually exposes.
+  const preferred = under
+    ? [`${prefix}Score`, `${prefix}Value`, `${prefix}Incidents`, `${prefix}Receiving`]
+    : [definition.defaultSort, `${prefix}Value`, `${prefix}Score`, `${prefix}Incidents`];
+  const defaultSort = [...preferred, definition.defaultSort]
+    .find(key => columns.some(column => column.key === key))
+    || columns.find(column => column.numeric)?.key
+    || columns[0].key;
   return { ...definition, columns, defaultSort };
 }
 
@@ -1108,7 +1140,7 @@ function csvColumns(table) {
   if (table === "region") return [
     { key: "Region", label: "Division", value: row => plainRegion(row) },
     { key: "Receiving", label: "Received" }, { key: "Sales", label: "Sold" },
-    { key: "Gap", label: "Balance" }, { key: modeValueKey(), label: isUnderMode() ? "Under value" : "Over value" },
+    { key: "Gap", label: "Balance" }, { key: modeValueKey(), label: exposureLabel({ short: true }) },
     { key: "Incidents", label: "Incidents" }, { key: "Position", label: "Position" },
   ];
   if (table === "outlet") return [
@@ -1303,7 +1335,13 @@ function updateSortIndicators(table) {
     button.setAttribute("aria-sort", active ? (criterion.direction === "asc" ? "ascending" : "descending") : "none");
   });
   const status = el(`${table}-sort-status`);
-  if (status) status.textContent = `Sorted by ${criteria.map(item => `${sortLabels[item.key] || item.key} ${item.direction === "asc" ? "↑" : "↓"}`).join(", then ")}`;
+  if (status) status.textContent = `Sorted by ${criteria.map(item => `${sortLabelFor(item.key)} ${item.direction === "asc" ? "↑" : "↓"}`).join(", then ")}`;
+}
+
+function sortLabelFor(key) {
+  // The under exposure column changes name with the measure behind it.
+  if (key === "UnderValue") return exposureLabel({ short: true }).toLocaleLowerCase();
+  return sortLabels[key] || key;
 }
 
 function drillText(display, metric, contextType, contextValue, contextLabel, extraClass = "") {
@@ -1312,7 +1350,7 @@ function drillText(display, metric, contextType, contextValue, contextLabel, ext
 
 function drillNumber(display, rawValue, metric, contextType, contextValue, contextLabel, extraClass = "") {
   if (finite(rawValue) == null) return "—";
-  return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-drill-value="${escapeHtml(rawValue)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabels[metric] || metric)} details">${escapeHtml(display)}</button>`;
+  return `<button class="number-link ${extraClass}" type="button" data-drill-metric="${escapeHtml(metric)}" data-drill-value="${escapeHtml(rawValue)}" data-context-type="${escapeHtml(contextType)}" data-context-value="${escapeHtml(contextValue)}" data-context-label="${escapeHtml(contextLabel)}" title="Open ${escapeHtml(sortLabelFor(metric))} details">${escapeHtml(display)}</button>`;
 }
 
 function renderRegions(rows) {
@@ -1343,7 +1381,7 @@ function renderRegions(rows) {
       <td class="numeric">${drillNumber(compact(row.Receiving), row.Receiving, "Receiving", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(compact(row.Sales), row.Sales, "Sales", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(signedCompact(row.Gap), row.Gap, "Gap", "region", contextValue, label, row.Gap > 0 ? "is-positive" : row.Gap < 0 ? "is-negative" : "")}</td>
-      <td class="numeric">${drillNumber(bdt(row[valueKey]), row[valueKey], valueKey, "region", contextValue, label)}</td>
+      <td class="numeric">${drillNumber(exposureDisplay(row[valueKey]), row[valueKey], valueKey, "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(exact(row.Incidents), row.Incidents, "Incidents", "region", contextValue, label)}</td>
       <td>${drillText(position.label, "Gap", "region", contextValue, label, `position-pill ${position.className}`)}</td></tr>`;
   }).join("");
@@ -1366,7 +1404,7 @@ function renderSignals(data) {
   const outlets = data.enrichedOutlets.filter(row => row.OutletCode);
   const topOutlet = under ? largestBy(outlets, "UnderIncidents") : largestBy(outlets, "OverValue");
   const categorySignal = topCategoryValue
-    ? { title: `${topCategoryValue.Category} is the largest value exposure`, detail: `${bdt(topCategoryValue[valueKey])} of ${word} value in the category context; this Power BI value measure is non-additive across rows.` }
+    ? { title: `${topCategoryValue.Category} is the largest ${word} exposure`, detail: `${exposureDisplay(topCategoryValue[valueKey])}${underIsQuantity() ? " units" : ""} in the category context; this Power BI measure is non-additive across rows.` }
     : topCategoryIncidents && { title: `${topCategoryIncidents.Category} carries the most ${word} incidents`, detail: `${exact(topCategoryIncidents[incidentKey])} incidents in the category context for the selected window.` };
   const signals = [
     categorySignal,
@@ -2514,7 +2552,7 @@ dom.resetButton.addEventListener("click", () => {
   state.filters = { ...DEFAULT_FILTERS };
   state.incidentMode = "over";
   state.exceptionFocus = "over";
-  state.underValue = { key: "", status: "idle", kpi: null, categories: new Map(), regions: new Map() };
+  state.underValue = { key: "", status: "idle", kind: "value", kpi: null, categories: new Map(), regions: new Map() };
   if (["OverValue", "UnderValue"].includes(state.sorts.region.key)) state.sorts.region = { key: "OverValue", direction: "desc" };
   applyIncidentModeVisibility();
   applyModeToRegionHeader();

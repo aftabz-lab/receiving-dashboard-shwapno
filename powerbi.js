@@ -1002,10 +1002,16 @@ export class PowerBIDataClient {
       : rangeForFilters(effectiveScope, filters);
     await this.ensureUnderMeasureSupport({ range: effectiveRange, scope: effectiveScope, signal });
 
-    const { resolved } = this.resolveIncidentMeasures("under", ["value"]);
-    if (!resolved.value) return { supported: false, kpi: null, categories: new Map(), regions: new Map() };
+    // The published report exposes Under Receiving (a negative quantity) and
+    // Under Receiving Score, but no Under Receiving Value. Where the value
+    // measure is absent, the quantity is reported in its place and labelled as
+    // such rather than left blank.
+    const { resolved } = this.resolveIncidentMeasures("under", ["value", "receiving"]);
+    const chosen = resolved.value || resolved.receiving;
+    if (!chosen) return { supported: false, kind: "none", kpi: null, categories: new Map(), regions: new Map() };
+    const kind = resolved.value ? "value" : "quantity";
 
-    const valueSelect = measure(resolved.value.source, resolved.value.measureName, "UnderValue");
+    const valueSelect = measure(chosen.source, chosen.measureName, "UnderValue");
     const partitions = filters.masterCategory === "all"
       ? effectiveScope.masterCategories.map(masterCategory => ({ ...filters, masterCategory }))
       : [filters];
@@ -1039,7 +1045,7 @@ export class PowerBIDataClient {
       }
     });
 
-    return { supported: true, kpi, categories, regions, range: effectiveRange, queryTimestamp };
+    return { supported: true, kind, kpi, categories, regions, range: effectiveRange, queryTimestamp };
   }
 
   /**
