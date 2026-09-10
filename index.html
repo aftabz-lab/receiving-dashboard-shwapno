@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260910-2">
+  <link rel="stylesheet" href="./styles.css?v=20260910-3">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -107,10 +107,11 @@
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon sales" aria-hidden="true">↗</span><h3>Sold units</h3></div><button id="kpi-sales" class="kpi-value drill-link" type="button" data-drill-metric="Sales">—</button><p id="kpi-sales-note">Invoiced sales</p></article>
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon balance" aria-hidden="true">±</span><h3>Receipt balance</h3></div><button id="kpi-gap" class="kpi-value drill-link" type="button" data-drill-metric="Gap">—</button><p id="kpi-gap-note">Received minus sold</p></article>
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon inventory" aria-hidden="true">□</span><h3>Inventory</h3></div><button id="kpi-inventory" class="kpi-value drill-link" type="button" data-drill-metric="Inventory">—</button><p id="kpi-inventory-note">Total inventory units</p></article>
-        <article class="kpi-card risk-kpi"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div><button id="kpi-over-value" class="kpi-value drill-link" type="button" data-drill-metric="OverValue">—</button><p id="kpi-over-value-note">Source-calculated exposure</p></article>
+        <article id="kpi-card-over-value" class="kpi-card risk-kpi"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Over-receiving value</h3></div><button id="kpi-over-value" class="kpi-value drill-link" type="button" data-drill-metric="OverValue">—</button><p id="kpi-over-value-note">Source-calculated exposure</p></article>
+        <article id="kpi-card-under-value" class="kpi-card risk-kpi" hidden><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">৳</span><h3>Under-receiving value</h3></div><button id="kpi-under-value" class="kpi-value drill-link" type="button" data-drill-metric="UnderValue">—</button><p id="kpi-under-value-note">Source-calculated exposure</p></article>
         <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon outlets" aria-hidden="true">◎</span><h3>Active outlets</h3></div><button id="kpi-outlets" class="kpi-value drill-link" type="button" data-drill-metric="ActiveOutlets">—</button><p id="kpi-outlets-note">Latest stock above zero</p></article>
-        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">↑</span><h3>Over receiving incident</h3></div><button id="kpi-over-incidents" class="kpi-value drill-link" type="button" data-drill-metric="OverIncidents">—</button><p id="kpi-over-incidents-note">Click for user detail</p></article>
-        <article class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Under receiving incident</h3></div><button id="kpi-under-incidents" class="kpi-value drill-link" type="button" data-drill-metric="UnderIncidents">—</button><p id="kpi-under-incidents-note">Click for user detail</p></article>
+        <article id="kpi-card-over-incidents" class="kpi-card"><div class="kpi-title-row"><span class="kpi-icon risk" aria-hidden="true">↑</span><h3>Over receiving incident</h3></div><button id="kpi-over-incidents" class="kpi-value drill-link" type="button" data-drill-metric="OverIncidents">—</button><p id="kpi-over-incidents-note">Click for user detail</p></article>
+        <article id="kpi-card-under-incidents" class="kpi-card" hidden><div class="kpi-title-row"><span class="kpi-icon receiving" aria-hidden="true">↓</span><h3>Under receiving incident</h3></div><button id="kpi-under-incidents" class="kpi-value drill-link" type="button" data-drill-metric="UnderIncidents">—</button><p id="kpi-under-incidents-note">Click for user detail</p></article>
       </section>
 
       <section class="support-strip" aria-label="Supporting operational metrics">
@@ -134,7 +135,7 @@
                 <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Receiving">Received <span></span></button></th>
                 <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Sales">Sold <span></span></button></th>
                 <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Gap">Balance <span></span></button></th>
-                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="OverValue">Over value <span></span></button></th>
+                <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="OverValue" data-mode-column="value">Over value <span></span></button></th>
                 <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Incidents">Incidents <span></span></button></th>
                 <th scope="col"><button class="sort-button" type="button" data-sort-table="region" data-sort-key="Position">Position <span></span></button></th>
               </tr></thead>
@@ -217,6 +218,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260910-2"></script>
+  <script type="module" src="./app.js?v=20260910-3"></script>
 </body>
 </html>

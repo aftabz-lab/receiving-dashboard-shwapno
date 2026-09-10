@@ -370,6 +370,40 @@ const COMMON_FROM = [
   { Name: "a", Entity: "DimArticle", Type: 0 },
 ];
 
+// Query source alias -> model entity, used to look measures up in the schema
+// the published report returns with modelsAndExploration.
+const SOURCE_ENTITIES = {
+  m: "Over/Under Receiving",
+  rank: "Over Receiving Rank Measures",
+  vis: "For Visula",
+  o: "DimOutlet",
+  q2: "Query2",
+};
+
+// The published page only ever used the "Over" half of the model. The "Under"
+// half is resolved at runtime so a model without the mirrored value/score
+// measures degrades to the incident measures instead of failing.
+const INCIDENT_MEASURES = {
+  over: {
+    receiving: { key: "OverReceiving", source: "m", candidates: ["Over Receiving"], required: true },
+    value: { key: "OverValue", source: "m", candidates: ["Over Receiving Value"], required: true },
+    score: { key: "OverScore", source: "rank", candidates: ["Over Receiving Score"], required: true },
+    icon: { key: "StatusIcon", source: "vis", candidates: ["Over Receiving Score Icon"], required: true },
+    incidents: { key: "OverIncidents", source: "m", candidates: ["Over Receiving Incidents"], required: true },
+    incidentPct: { key: "OverIncidentPct", source: "m", candidates: ["Over Receiving Incident%"], required: true },
+  },
+  under: {
+    receiving: { key: "UnderReceiving", source: "m", candidates: ["Under Receiving", "Under Receiving Qty"] },
+    value: { key: "UnderValue", source: "m", candidates: ["Under Receiving Value", "Under Receiving  Value"] },
+    score: { key: "UnderScore", source: "rank", candidates: ["Under Receiving Score"] },
+    icon: { key: "StatusIcon", source: "vis", candidates: ["Under Receiving Score Icon"] },
+    incidents: { key: "UnderIncidents", source: "m", candidates: ["Under Receiving Incidents"], required: true },
+    incidentPct: { key: "UnderIncidentPct", source: "m", candidates: ["Under Receiving Incident%"], required: true },
+  },
+};
+
+const OPTIONAL_INCIDENT_KEYS = ["receiving", "value", "score", "icon"];
+
 const USER_SOURCE = { Name: "u", Entity: "Query4", Type: 0 };
 const MANAGEMENT_FROM = [
   ...COMMON_FROM,
@@ -479,6 +513,36 @@ function combineIncidentUserContexts(rows) {
   });
 }
 
+function combineCategoryContexts(rows) {
+  const numeric = value => (value == null || value === "" ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
+  const additive = ["OpeningStock", "Receiving", "TotalInventory", "TotalSales", "EstimatedClosingStock", "OverReceiving", "UnderReceiving", "OverValue", "UnderValue", "OverIncidents", "UnderIncidents"];
+  const groups = new Map();
+  for (const row of rows) {
+    const key = String(row.Category ?? "");
+    const current = groups.get(key);
+    if (!current) {
+      groups.set(key, { ...row, _overPopulation: 0, _underPopulation: 0 });
+      continue;
+    }
+    for (const field of additive) {
+      const value = numeric(row[field]);
+      if (value != null) current[field] = (numeric(current[field]) ?? 0) + value;
+    }
+    for (const field of ["StdStockDays", "OverScore", "UnderScore", "StatusIcon"]) {
+      if (current[field] == null && row[field] != null) current[field] = row[field];
+    }
+  }
+  return [...groups.values()].map(row => {
+    for (const prefix of ["Over", "Under"]) {
+      const count = numeric(row[`${prefix}Incidents`]);
+      const percent = numeric(row[`${prefix}IncidentPct`]);
+      if (count != null && percent > 0) row[`${prefix}IncidentPct`] = percent;
+      delete row[`_${prefix.toLowerCase()}Population`];
+    }
+    return row;
+  });
+}
+
 function rangeForDays(scope, days) {
   const requestedDays = Number(days) || 30;
   return {
@@ -499,12 +563,32 @@ function rangeForFilters(scope, filters = {}) {
   return rangeForDays(scope, filters.days);
 }
 
+function buildMeasureIndex(model) {
+  const tables = model?.model?.tables;
+  if (!Array.isArray(tables) || !tables.length) return null;
+  const index = new Map();
+  for (const table of tables) {
+    const names = (table?.measures || []).map(item => item?.name).filter(Boolean);
+    if (table?.name) index.set(table.name, new Set(names));
+  }
+  return index.size ? index : null;
+}
+
+function mergeNumeric(target, key, value) {
+  const number = value == null || value === "" ? null : Number(value);
+  if (!Number.isFinite(number)) return;
+  target[key] = (target[key] ?? 0) + number;
+}
+
 export class PowerBIDataClient {
   constructor() {
     this.model = null;
     this.report = null;
     this.scope = null;
     this.sourceTimestamp = null;
+    this.measureIndex = null;
+    this.unsupportedMeasures = new Set();
+    this.underProbePromise = null;
   }
 
   async connect({ signal } = {}) {
@@ -520,9 +604,109 @@ export class PowerBIDataClient {
     if (!this.model || !this.report) throw new Error("The published Power BI model could not be identified.");
 
     this.scope = savedReportScope(payload.exploration?.explorationContent?.explorationDocument || "");
+    this.measureIndex = buildMeasureIndex(this.model);
     const refresh = this.model.LastRefreshTime || payload.package?.LastRefreshTime || null;
     this.sourceTimestamp = refresh && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(refresh) ? `${refresh}Z` : refresh;
     return this;
+  }
+
+  resolveMeasure(source, candidates) {
+    const entity = SOURCE_ENTITIES[source];
+    const known = entity && this.measureIndex ? this.measureIndex.get(entity) : null;
+    for (const candidate of candidates) {
+      if (this.unsupportedMeasures.has(`${source}:${candidate}`)) continue;
+      if (known) {
+        if (known.has(candidate)) return candidate;
+        continue;
+      }
+      return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Returns the select fragments for the requested over/under measures plus the
+   * keys the published model does not expose, so the caller can drop the
+   * matching columns instead of showing empty ones.
+   */
+  resolveIncidentMeasures(mode, names) {
+    const set = INCIDENT_MEASURES[mode === "under" ? "under" : "over"];
+    const resolved = {};
+    const missing = [];
+    for (const name of names) {
+      const definition = set[name];
+      if (!definition) continue;
+      const measureName = definition.required
+        ? definition.candidates[0]
+        : this.resolveMeasure(definition.source, definition.candidates);
+      if (measureName) resolved[name] = { ...definition, measureName };
+      else missing.push(definition.key);
+    }
+    return { resolved, missing };
+  }
+
+  incidentSelect(resolved, names) {
+    return names
+      .filter(name => resolved[name])
+      .map(name => measure(resolved[name].source, resolved[name].measureName, resolved[name].key));
+  }
+
+  /**
+   * One tolerant batch that asks for each optional "Under" measure on its own.
+   * Results are inspected per query, so a model that publishes only some of
+   * them keeps the ones it has.
+   */
+  async ensureUnderMeasureSupport({ range, scope, signal } = {}) {
+    if (this.measureIndex) return;
+    if (this.underProbePromise) return this.underProbePromise;
+
+    const effectiveScope = scope ? { ...this.scope, ...scope } : this.scope;
+    const probeRange = range || rangeForDays(effectiveScope, 7);
+    const probes = OPTIONAL_INCIDENT_KEYS
+      .map(name => INCIDENT_MEASURES.under[name])
+      .flatMap(definition => definition.candidates.map(candidate => ({ definition, candidate })));
+
+    this.underProbePromise = (async () => {
+      const where = commonWhere(probeRange, effectiveScope, {});
+      const specs = probes.map((probe, index) => ({
+        key: `probe${index}`,
+        query: createQuery([measure(probe.definition.source, probe.candidate, "Probe")], MANAGEMENT_FROM, where, 1),
+      }));
+      let outcomes;
+      try {
+        outcomes = await this.runSpecsTolerant(specs, { signal });
+      } catch {
+        outcomes = specs.map(() => false);
+      }
+      probes.forEach((probe, index) => {
+        if (!outcomes[index]) this.unsupportedMeasures.add(`${probe.definition.source}:${probe.candidate}`);
+      });
+    })();
+
+    return this.underProbePromise;
+  }
+
+  async runSpecsTolerant(specs, { signal } = {}) {
+    const queries = specs.map(spec => ({
+      ...spec.query,
+      ApplicationContext: {
+        DatasetId: this.model.dbName,
+        Sources: [{ ReportId: this.report.objectId }],
+      },
+    }));
+    const response = await fetch(`${API_ROOT}/public/reports/querydata?synchronous=true`, {
+      method: "POST",
+      headers: requestHeaders(true),
+      cache: "no-store",
+      signal,
+      body: JSON.stringify({ version: "1.0.0", queries, cancelQueries: [], modelId: this.model.id }),
+    });
+    if (!response.ok) throw new Error(`Power BI data request failed (${response.status}).`);
+    const payload = await response.json();
+    return specs.map((_, index) => {
+      const entry = payload.results?.[index];
+      return Boolean(entry?.result?.data) && !entry?.result?.error;
+    });
   }
 
   async runSpecs(specs, { signal } = {}) {
@@ -754,6 +938,17 @@ export class PowerBIDataClient {
       ? { ...queryContext.range, days: Number(queryContext.range.days) || Number(filters.days) || 30 }
       : rangeForFilters(effectiveScope, filters);
     const where = commonWhere(range, effectiveScope, filters);
+    const table = Number(tableNumber) || 1;
+    const mode = queryContext?.mode === "under" ? "under" : "over";
+    // Tables 1-4 mirror the saved "Over Receiving" page; the same shapes are
+    // rebuilt against the Under measures when the incident mode is Under.
+    const modeApplies = [1, 2, 3, 4].includes(table);
+    if (modeApplies && mode === "under") await this.ensureUnderMeasureSupport({ range, scope: effectiveScope, signal });
+    const { resolved, missing } = this.resolveIncidentMeasures(
+      modeApplies ? mode : "over",
+      table === 4 ? ["receiving", "value", "score", "icon", "incidents", "incidentPct"] : ["receiving", "value", "score", "icon"]
+    );
+
     const common = [
       measure("m", "Opening Stock", "OpeningStock"),
       sum("r", "qty_in_unit_of_entry", "Receiving"),
@@ -766,32 +961,139 @@ export class PowerBIDataClient {
       measure("m", "Stock Day", "CurrentStockDay"),
       measure("q2", "Latest Stock", "CurrentStockSystem"),
       measure("m", "Closing Stock On Receiving", "ClosingStockReceiving"),
-      measure("m", "Over Receiving", "OverReceiving"),
-      measure("m", "Over Receiving Value", "OverValue"),
-      measure("rank", "Over Receiving Score", "OverScore"),
-      measure("vis", "Over Receiving Score Icon", "StatusIcon"),
+      ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon"]),
     ];
     const definitions = {
       1: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("a", "ArticleNo", "ArticleNo"), column("a", "ArticleName", "ArticleName"), column("a", "Category3", "Category"), ...operational, measure("rank", "sorting", "Sorting")],
       2: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("g", "Article Combo", "ArticleCombo"), ...operational, measure("rank", "sorting", "Sorting")],
       3: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), ...operational, measure("rank", "sorting", "Sorting")],
-      4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), measure("m", "Over Receiving", "OverReceiving"), measure("m", "Over Receiving Value", "OverValue"), measure("rank", "Over Receiving Score", "OverScore"), measure("vis", "Over Receiving Score Icon", "StatusIcon"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct")],
+      4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon", "incidents", "incidentPct"])],
       5: [column("a", "ArticleNo", "ArticleNo"), column("r", "PO Clean", "PONumber"), column("r", "movement_type", "MovementType"), column("u", "created_by", "CreatedBy"), column("u", "document_date", "PODate"), column("r", "posting_date", "ReceivingDate"), sum("r", "qty_in_unit_of_entry", "Receiving")],
       6: [column("o", "OutletCode", "OutletCode"), column("o", "OutletName", "OutletName"), column("u", "created_by", "CreatedBy"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct"), measure("m", "Under Receiving Incidents", "UnderIncidents"), measure("m", "Under Receiving Incident%", "UnderIncidentPct")],
     };
-    const table = Number(tableNumber) || 1;
     const select = definitions[table] || definitions[1];
-    if (table === 6 && filters.masterCategory === "all") {
+    // Tables 6 and 4 are reached from the cross-division incident view, so an
+    // "All" scope is answered one business division at a time and merged.
+    if ((table === 6 || table === 4) && filters.masterCategory === "all") {
       const specs = effectiveScope.masterCategories.map((masterCategory, index) => ({
         key: `rows${index}`,
         query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, { ...filters, masterCategory }), MAX_QUERY_ROWS),
       }));
       const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
-      const rows = combineIncidentUserContexts(specs.flatMap(spec => decoded[spec.key] || []));
-      return { rows, range, queryTimestamp };
+      const merged = specs.flatMap(spec => decoded[spec.key] || []);
+      const rows = table === 6 ? combineIncidentUserContexts(merged) : combineCategoryContexts(merged);
+      return { rows, range, queryTimestamp, missing, mode };
     }
     const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, MAX_QUERY_ROWS) }];
     const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
-    return { rows: table === 6 ? combineIncidentUserContexts(decoded.rows) : decoded.rows, range, queryTimestamp };
+    return { rows: table === 6 ? combineIncidentUserContexts(decoded.rows) : decoded.rows, range, queryTimestamp, missing, mode };
+  }
+
+  /**
+   * Under-receiving value for the KPI card, the category signal and the
+   * division table. Kept apart from the shared snapshot so the fast default
+   * load never depends on a measure the published model may not expose.
+   */
+  async loadUnderValueContext(filters = {}, { range, scope, signal } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
+    const effectiveScope = scope ? { ...this.scope, ...scope } : this.scope;
+    const effectiveRange = range
+      ? { ...range, days: Number(range.days) || Number(filters.days) || 30 }
+      : rangeForFilters(effectiveScope, filters);
+    await this.ensureUnderMeasureSupport({ range: effectiveRange, scope: effectiveScope, signal });
+
+    const { resolved } = this.resolveIncidentMeasures("under", ["value"]);
+    if (!resolved.value) return { supported: false, kpi: null, categories: new Map(), regions: new Map() };
+
+    const valueSelect = measure(resolved.value.source, resolved.value.measureName, "UnderValue");
+    const partitions = filters.masterCategory === "all"
+      ? effectiveScope.masterCategories.map(masterCategory => ({ ...filters, masterCategory }))
+      : [filters];
+
+    const specs = partitions.flatMap((partitionFilters, index) => {
+      const partitionWhere = commonWhere(effectiveRange, effectiveScope, partitionFilters);
+      return [
+        { key: `kpi${index}`, query: createQuery([valueSelect], sourceSet(partitionFilters), partitionWhere, 50) },
+        { key: `categories${index}`, query: createQuery([column("a", "Category3", "Category"), valueSelect], sourceSet(partitionFilters), partitionWhere, 500) },
+        { key: `regions${index}`, query: createQuery([column("o", "RegionName", "Region"), valueSelect], sourceSet(partitionFilters), partitionWhere, 100) },
+      ];
+    });
+
+    const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
+    const categories = new Map();
+    const regions = new Map();
+    let kpi = null;
+
+    partitions.forEach((_, index) => {
+      for (const row of decoded[`kpi${index}`] || []) {
+        const value = row.UnderValue == null || row.UnderValue === "" ? null : Number(row.UnderValue);
+        if (Number.isFinite(value)) kpi = (kpi ?? 0) + value;
+      }
+      for (const [key, target, field] of [[`categories${index}`, categories, "Category"], [`regions${index}`, regions, "Region"]]) {
+        for (const row of decoded[key] || []) {
+          const name = String(row[field] ?? "");
+          const value = row.UnderValue == null || row.UnderValue === "" ? null : Number(row.UnderValue);
+          if (!Number.isFinite(value)) continue;
+          target.set(name, (target.get(name) ?? 0) + value);
+        }
+      }
+    });
+
+    return { supported: true, kpi, categories, regions, range: effectiveRange, queryTimestamp };
+  }
+
+  /**
+   * Category-level incidents for every outlet/user pair on the user-incident
+   * table. This is the second sheet of the incident workbook export.
+   */
+  async loadIncidentCategoryBreakdown(filters = {}, { range, scope, mode = "over", signal } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
+    const effectiveScope = scope ? { ...this.scope, ...scope } : this.scope;
+    const effectiveRange = range
+      ? { ...range, days: Number(range.days) || Number(filters.days) || 30 }
+      : rangeForFilters(effectiveScope, filters);
+    const incidentMode = mode === "under" ? "under" : "over";
+    if (incidentMode === "under") await this.ensureUnderMeasureSupport({ range: effectiveRange, scope: effectiveScope, signal });
+
+    const { resolved, missing } = this.resolveIncidentMeasures(incidentMode, ["receiving", "value", "score", "icon", "incidents", "incidentPct"]);
+    const select = [
+      column("o", "OutletCode", "OutletCode"),
+      column("o", "OutletName", "OutletName"),
+      column("u", "created_by", "CreatedBy"),
+      column("a", "Category3", "Category"),
+      measure("m", "Opening Stock", "OpeningStock"),
+      sum("r", "qty_in_unit_of_entry", "Receiving"),
+      measure("m", "Total Inventory", "TotalInventory"),
+      sum("s", "ActualInvoicedQuantity", "TotalSales"),
+      measure("m", "STD. Stock Days", "StdStockDays"),
+      measure("o", "Est. Closing Stock", "EstimatedClosingStock"),
+      ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon", "incidents", "incidentPct"]),
+    ];
+
+    const partitions = filters.masterCategory === "all"
+      ? effectiveScope.masterCategories.map(masterCategory => ({ ...filters, masterCategory }))
+      : [filters];
+    const specs = partitions.map((partitionFilters, index) => ({
+      key: `rows${index}`,
+      query: createQuery(select, MANAGEMENT_FROM, commonWhere(effectiveRange, effectiveScope, partitionFilters), MAX_QUERY_ROWS),
+    }));
+
+    const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
+    const grouped = new Map();
+    for (const spec of specs) {
+      for (const row of decoded[spec.key] || []) {
+        const key = `${row.OutletCode ?? ""}\u001f${row.CreatedBy ?? ""}\u001f${row.Category ?? ""}`;
+        const current = grouped.get(key);
+        if (!current) {
+          grouped.set(key, { ...row });
+          continue;
+        }
+        for (const field of ["OpeningStock", "Receiving", "TotalInventory", "TotalSales", "EstimatedClosingStock", "OverReceiving", "UnderReceiving", "OverValue", "UnderValue", "OverIncidents", "UnderIncidents"]) {
+          if (row[field] != null) mergeNumeric(current, field, row[field]);
+        }
+      }
+    }
+
+    return { rows: [...grouped.values()], range: effectiveRange, queryTimestamp, missing, mode: incidentMode };
   }
 }

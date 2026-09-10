@@ -1,5 +1,6 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-2";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-3";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
+import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-3";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
@@ -59,6 +60,13 @@ const state = {
   detailTableNumber: 1,
   detailDrillValue: null,
   detailRowFilters: {},
+  detailFollowsIncidentScope: false,
+  detailColumnFilters: {},
+  detailColumnFilterTimer: 0,
+  detailHeaderSignature: "",
+  detailMissingColumns: [],
+  detailExportBusy: false,
+  underValue: { key: "", status: "idle", kpi: null, categories: new Map(), regions: new Map() },
   detailSourceSearch: null,
   detailSearchTimer: 0,
   detailSearch: "",
@@ -111,6 +119,10 @@ const dom = {
   sourceFreshness: el("source-freshness"),
   errorPanel: el("error-panel"),
   errorMessage: el("error-message"),
+  overValueCard: el("kpi-card-over-value"),
+  underValueCard: el("kpi-card-under-value"),
+  overIncidentCard: el("kpi-card-over-incidents"),
+  underIncidentCard: el("kpi-card-under-incidents"),
   overviewView: el("overview-view"),
   exceptionsView: el("exceptions-view"),
   managementSignals: el("management-signals"),
@@ -687,6 +699,87 @@ async function refreshOrganization() {
   }
 }
 
+function isUnderMode() {
+  return state.incidentMode === "under";
+}
+
+function modePrefix() {
+  return isUnderMode() ? "Under" : "Over";
+}
+
+function modeValueKey() {
+  return `${modePrefix()}Value`;
+}
+
+function modeIncidentKey() {
+  return `${modePrefix()}Incidents`;
+}
+
+function underValueFor(grain, name) {
+  if (state.underValue.status !== "ready") return null;
+  const map = state.underValue[grain];
+  return map ? finite(map.get(String(name ?? ""))) : null;
+}
+
+function applyIncidentModeVisibility() {
+  const under = isUnderMode();
+  if (dom.overValueCard) dom.overValueCard.hidden = under;
+  if (dom.overIncidentCard) dom.overIncidentCard.hidden = under;
+  if (dom.underValueCard) dom.underValueCard.hidden = !under;
+  if (dom.underIncidentCard) dom.underIncidentCard.hidden = !under;
+}
+
+function applyModeToRegionHeader() {
+  const button = document.querySelector('[data-sort-table="region"][data-mode-column="value"]');
+  if (!button) return;
+  const previousKey = button.dataset.sortKey;
+  const key = modeValueKey();
+  if (previousKey === key) return;
+  if (state.sorts.region.key === previousKey) state.sorts.region = { ...state.sorts.region, key };
+  if (state.sorts.region.secondary) {
+    state.sorts.region.secondary = state.sorts.region.secondary.map(item => (item.key === previousKey ? { ...item, key } : item));
+  }
+  button.dataset.sortKey = key;
+  button.innerHTML = `${isUnderMode() ? "Under value" : "Over value"} <span></span>`;
+}
+
+function underValueRequestKey() {
+  return cacheHash(JSON.stringify({
+    filters: buildPowerBIFilters(),
+    range: state.data?.range || null,
+    sourceTimestamp: state.data?.sourceTimestamp || "unknown",
+  }));
+}
+
+async function ensureUnderValues({ force = false } = {}) {
+  if (!state.data) return;
+  const key = underValueRequestKey();
+  if (!force && state.underValue.key === key && state.underValue.status !== "idle") return;
+
+  state.underValue = { key, status: "loading", kpi: null, categories: new Map(), regions: new Map() };
+  renderKpis(state.data.kpis?.[0] || {}, state.data);
+
+  try {
+    const result = await state.client.loadUnderValueContext(buildPowerBIFilters(), {
+      range: state.data.range,
+      scope: state.data.scope,
+    });
+    if (state.underValue.key !== key) return;
+    state.underValue = {
+      key,
+      status: result.supported ? "ready" : "missing",
+      kpi: result.kpi,
+      categories: result.categories || new Map(),
+      regions: result.regions || new Map(),
+    };
+  } catch (error) {
+    console.warn("Under-receiving value could not be loaded", error);
+    if (state.underValue.key !== key) return;
+    state.underValue = { key, status: "error", kpi: null, categories: new Map(), regions: new Map() };
+  }
+  if (state.data) renderAll(state.data);
+}
+
 function renderPulse(kpi, data) {
   const received = finite(kpi.Receiving) ?? 0;
   const sales = finite(kpi.Sales) ?? 0;
@@ -731,15 +824,34 @@ function resolvedOverValue(kpi, data) {
   return { value: useGroupedValue ? groupedValue : sourceValue, grouped: useGroupedValue };
 }
 
+function resolvedUnderValue() {
+  if (state.underValue.status !== "ready") return { value: null, grouped: false };
+  const sourceValue = finite(state.underValue.kpi);
+  const groupedValues = [...state.underValue.categories.values()].map(value => finite(value)).filter(value => value != null);
+  const groupedValue = groupedValues.length ? groupedValues.reduce((total, value) => total + value, 0) : null;
+  const useGroupedValue = groupedValue != null && groupedValue !== 0 && (sourceValue == null || sourceValue === 0);
+  return { value: useGroupedValue ? groupedValue : sourceValue, grouped: useGroupedValue };
+}
+
+function underValueNote(kpi) {
+  if (state.underValue.status === "loading") return "Reading the source measure…";
+  if (state.underValue.status === "missing") return "Under-receiving value is not published in the source model";
+  if (state.underValue.status === "error") return "Source value unavailable · switch back to reload";
+  return `${exact(kpi?.UnderIncidents)} incidents · click for detail`;
+}
+
 function renderKpis(kpi, data) {
   const received = finite(kpi.Receiving);
   const sales = finite(kpi.Sales);
   const gap = received != null && sales != null ? received - sales : null;
   const ratio = sales ? (received / sales) * 100 : null;
   const overValue = resolvedOverValue(kpi, data);
+  const underValue = resolvedUnderValue();
 
   data.resolvedOverValue = overValue.value;
   data.overValueUsesGroupedContext = overValue.grouped;
+  data.resolvedUnderValue = underValue.value;
+  data.underValueUsesGroupedContext = underValue.grouped;
 
   setKpi("kpi-receiving", received, exact);
   setKpi("kpi-sales", sales, exact);
@@ -749,7 +861,11 @@ function renderKpis(kpi, data) {
   setKpi("kpi-outlets", kpi.ActiveOutlets, exact);
   setKpi("kpi-over-incidents", kpi.OverIncidents, exact);
   setKpi("kpi-under-incidents", kpi.UnderIncidents, exact);
+  setKpi("kpi-under-value", underValue.value, bdtExact);
   el("kpi-over-value").dataset.drillValue = overValue.value == null ? "" : String(overValue.value);
+  el("kpi-under-value").dataset.drillValue = underValue.value == null ? "" : String(underValue.value);
+  setText("kpi-under-value-note", underValueNote(kpi));
+  applyIncidentModeVisibility();
   setText("kpi-receiving-note", `${data.range.days}-day live total · click for detail`);
   setText("kpi-sales-note", `Invoiced sales · click for detail`);
   setText("kpi-gap-note", ratio == null ? "Received minus sold" : `Receipts equal ${percentage(ratio)} of sales`);
@@ -857,122 +973,142 @@ const sortLabels = {
   ArticleCombo: "article group", OpeningStock: "opening stock", TotalInventory: "total inventory", TotalSales: "total sales",
   StdStockDays: "standard stock days", CurrentStockDay: "current stock day", CurrentStockSystem: "current stock in system",
   ClosingStockReceiving: "closing stock on receiving", OverReceiving: "over receiving", OverScore: "over receiving score",
+  UnderValue: "under value", UnderReceiving: "under receiving", UnderScore: "under receiving score",
   StatusIcon: "status", Sorting: "sorting", EstimatedClosingStock: "estimated closing stock", OverIncidentPct: "incident percent",
   PONumber: "PO number", MovementType: "movement type", CreatedBy: "user ID", PODate: "PO date", ReceivingDate: "receiving date",
 };
 
-const operationalManagementColumns = [
-  { key: "OpeningStock", label: "Opening Stock", numeric: true },
-  { key: "Receiving", label: "Receiving Qty", numeric: true },
-  { key: "TotalInventory", label: "Total Inventory", numeric: true },
-  { key: "TotalSales", label: "Total Sales Qty", numeric: true },
-  { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
-  { key: "CurrentStockDay", label: "Current Stock Day", numeric: true, decimals: 2 },
-  { key: "CurrentStockSystem", label: "Current Stock in System", numeric: true },
-  { key: "ClosingStockReceiving", label: "Closing Stock On Receiving", numeric: true },
-  { key: "OverReceiving", label: "Over Receiving", numeric: true },
-  { key: "OverValue", label: "Over Receiving Value", numeric: true },
-  { key: "OverScore", label: "Over Receiving Score", numeric: true, decimals: 2 },
-  { key: "StatusIcon", label: ".", status: true },
-];
+function incidentManagementColumns(prefix) {
+  return [
+    { key: `${prefix}Receiving`, label: `${prefix} Receiving`, numeric: true },
+    { key: `${prefix}Value`, label: `${prefix} Receiving Value`, numeric: true },
+    { key: `${prefix}Score`, label: `${prefix} Receiving Score`, numeric: true, decimals: 2 },
+    { key: "StatusIcon", label: ".", status: true },
+  ];
+}
 
-const managementTableDefinitions = {
-  1: {
-    title: "Table 1 – Over Receiving Incidents By Article",
-    defaultSort: "OverValue",
-    columns: [
-      { key: "OutletName", label: "OutletName" },
-      { key: "ArticleNo", label: "Article No" },
-      { key: "ArticleName", label: "ArticleName" },
-      { key: "Category", label: "Category" },
-      ...operationalManagementColumns,
-      { key: "Sorting", label: "sorting", numeric: true },
-    ],
-  },
-  2: {
-    title: "Table 2 – Over Receiving Incidents By Article-Group (For Loose Commodity & PnP)",
-    defaultSort: "OverValue",
-    columns: [
-      { key: "OutletName", label: "OutletName" },
-      { key: "ArticleCombo", label: "Article Combo" },
-      ...operationalManagementColumns,
-      { key: "Sorting", label: "sorting", numeric: true },
-    ],
-  },
-  3: {
-    title: "Table 3 – Over Receiving Incidents By Outlet",
-    defaultSort: "OverValue",
-    columns: [
-      { key: "OutletName", label: "OutletName" },
-      ...operationalManagementColumns,
-      { key: "Sorting", label: "sorting", numeric: true },
-    ],
-  },
-  4: {
-    title: "Table 4 – Over Receiving By Category",
-    defaultSort: "OverValue",
-    columns: [
-      { key: "Category", label: "Category3" },
-      { key: "OpeningStock", label: "Opening Stock", numeric: true },
-      { key: "Receiving", label: "Receiving Qty", numeric: true },
-      { key: "TotalInventory", label: "Total Inventory", numeric: true },
-      { key: "TotalSales", label: "Total Sales Qty", numeric: true },
-      { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
-      { key: "EstimatedClosingStock", label: "Est. Closing Stock", numeric: true },
-      { key: "OverReceiving", label: "Over Receiving", numeric: true },
-      { key: "OverValue", label: "Over Receiving Value", numeric: true },
-      { key: "OverScore", label: "Over Receiving Score", numeric: true, decimals: 2 },
-      { key: "StatusIcon", label: ".", status: true },
-      { key: "OverIncidents", label: "Over Receiving Incidents", numeric: true },
-      { key: "OverIncidentPct", label: "Over Receiving Incident%", numeric: true, decimals: 2 },
-    ],
-  },
-  5: {
-    title: "Table 5 – PO Detail Table",
-    defaultSort: "ReceivingDate",
-    defaultDirection: "desc",
-    columns: [
-      { key: "ArticleNo", label: "ArticleNo" },
-      { key: "PONumber", label: "PO Number" },
-      { key: "MovementType", label: "Movement Type" },
-      { key: "CreatedBy", label: "Created By (User ID)" },
-      { key: "PODate", label: "PO Date", date: true },
-      { key: "ReceivingDate", label: "Receiving Date", date: true },
-      { key: "Receiving", label: "Receiving Qty", numeric: true },
-    ],
-  },
-};
+function operationalManagementColumns(prefix) {
+  return [
+    { key: "OpeningStock", label: "Opening Stock", numeric: true },
+    { key: "Receiving", label: "Receiving Qty", numeric: true },
+    { key: "TotalInventory", label: "Total Inventory", numeric: true },
+    { key: "TotalSales", label: "Total Sales Qty", numeric: true },
+    { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
+    { key: "CurrentStockDay", label: "Current Stock Day", numeric: true, decimals: 2 },
+    { key: "CurrentStockSystem", label: "Current Stock in System", numeric: true },
+    { key: "ClosingStockReceiving", label: "Closing Stock On Receiving", numeric: true },
+    ...incidentManagementColumns(prefix),
+  ];
+}
+
+function managementTableDefinitions(prefix) {
+  return {
+    1: {
+      title: `Table 1 – ${prefix} Receiving Incidents By Article`,
+      defaultSort: `${prefix}Value`,
+      columns: [
+        { key: "OutletName", label: "OutletName" },
+        { key: "ArticleNo", label: "Article No" },
+        { key: "ArticleName", label: "ArticleName" },
+        { key: "Category", label: "Category" },
+        ...operationalManagementColumns(prefix),
+        { key: "Sorting", label: "sorting", numeric: true },
+      ],
+    },
+    2: {
+      title: `Table 2 – ${prefix} Receiving Incidents By Article-Group (For Loose Commodity & PnP)`,
+      defaultSort: `${prefix}Value`,
+      columns: [
+        { key: "OutletName", label: "OutletName" },
+        { key: "ArticleCombo", label: "Article Combo" },
+        ...operationalManagementColumns(prefix),
+        { key: "Sorting", label: "sorting", numeric: true },
+      ],
+    },
+    3: {
+      title: `Table 3 – ${prefix} Receiving Incidents By Outlet`,
+      defaultSort: `${prefix}Value`,
+      columns: [
+        { key: "OutletName", label: "OutletName" },
+        ...operationalManagementColumns(prefix),
+        { key: "Sorting", label: "sorting", numeric: true },
+      ],
+    },
+    4: {
+      title: `Table 4 – ${prefix} Receiving By Category`,
+      defaultSort: `${prefix}Value`,
+      columns: [
+        { key: "Category", label: "Category3" },
+        { key: "OpeningStock", label: "Opening Stock", numeric: true },
+        { key: "Receiving", label: "Receiving Qty", numeric: true },
+        { key: "TotalInventory", label: "Total Inventory", numeric: true },
+        { key: "TotalSales", label: "Total Sales Qty", numeric: true },
+        { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
+        { key: "EstimatedClosingStock", label: "Est. Closing Stock", numeric: true },
+        ...incidentManagementColumns(prefix),
+        { key: `${prefix}Incidents`, label: `${prefix} Receiving Incidents`, numeric: true },
+        { key: `${prefix}IncidentPct`, label: `${prefix} Receiving Incident%`, numeric: true, decimals: 2 },
+      ],
+    },
+    5: {
+      title: "Table 5 – PO Detail Table",
+      defaultSort: "ReceivingDate",
+      defaultDirection: "desc",
+      columns: [
+        { key: "ArticleNo", label: "ArticleNo" },
+        { key: "PONumber", label: "PO Number" },
+        { key: "MovementType", label: "Movement Type" },
+        { key: "CreatedBy", label: "Created By (User ID)" },
+        { key: "PODate", label: "PO Date", date: true },
+        { key: "ReceivingDate", label: "Receiving Date", date: true },
+        { key: "Receiving", label: "Receiving Qty", numeric: true },
+      ],
+    },
+    6: {
+      title: `${prefix} Receiving Incidents by User`,
+      defaultSort: `${prefix}Incidents`,
+      columns: [
+        { key: "OutletCode", label: "Outlet Code" },
+        { key: "OutletName", label: "Outlet Name" },
+        { key: "RHO", label: "RHO" },
+        { key: "Zonal", label: "Zonal" },
+        { key: "CreatedBy", label: "User Code" },
+        { key: `${prefix}Incidents`, label: `${prefix} Receiving Incidents`, numeric: true },
+        { key: `${prefix}IncidentPct`, label: `${prefix} Receiving Incident%`, numeric: true, decimals: 2 },
+      ],
+    },
+  };
+}
 
 function incidentTableType() {
-  if (["UnderIncidents", "UnderIncidentPct"].includes(state.detailMetric)) return "under";
+  if (["UnderIncidents", "UnderIncidentPct", "UnderValue"].includes(state.detailMetric)) return "under";
   if (["OverIncidents", "OverIncidentPct"].includes(state.detailMetric)) return "over";
   return state.incidentMode;
 }
 
 function managementTableDefinition(tableNumber) {
-  if (Number(tableNumber) !== 6) return managementTableDefinitions[tableNumber] || managementTableDefinitions[1];
+  const number = Number(tableNumber) || 1;
   const under = incidentTableType() === "under";
   const prefix = under ? "Under" : "Over";
-  return {
-    title: `${prefix} Receiving Incidents by User`,
-    defaultSort: `${prefix}Incidents`,
-    columns: [
-      { key: "OutletCode", label: "Outlet Code" },
-      { key: "OutletName", label: "Outlet Name" },
-      { key: "RHO", label: "RHO" },
-      { key: "Zonal", label: "Zonal" },
-      { key: "CreatedBy", label: "User Code" },
-      { key: `${prefix}Incidents`, label: `${prefix} Receiving Incidents`, numeric: true },
-      { key: `${prefix}IncidentPct`, label: `${prefix} Receiving Incident%`, numeric: true, decimals: 2 },
-    ],
-  };
+  const definitions = managementTableDefinitions(prefix);
+  const definition = definitions[number] || definitions[1];
+  // A published model may not mirror every "Over" measure on the "Under" side;
+  // those columns are dropped rather than shown as empty ones.
+  const missing = new Set(under ? state.detailMissingColumns : []);
+  const columns = definition.columns.filter(column => !missing.has(column.key));
+  const defaultSort = columns.some(column => column.key === definition.defaultSort)
+    ? definition.defaultSort
+    : (columns.find(column => column.key === `${prefix}Incidents`)?.key
+      || columns.find(column => column.numeric)?.key
+      || columns[0].key);
+  return { ...definition, columns, defaultSort };
 }
 
 function csvColumns(table) {
   if (table === "region") return [
     { key: "Region", label: "Division", value: row => plainRegion(row) },
     { key: "Receiving", label: "Received" }, { key: "Sales", label: "Sold" },
-    { key: "Gap", label: "Balance" }, { key: "OverValue", label: "Over value" },
+    { key: "Gap", label: "Balance" }, { key: modeValueKey(), label: isUnderMode() ? "Under value" : "Over value" },
     { key: "Incidents", label: "Incidents" }, { key: "Position", label: "Position" },
   ];
   if (table === "outlet") return [
@@ -1016,7 +1152,124 @@ function exportVisibleCsv(table) {
 
 function setExportAvailability(table, hasRows) {
   const button = document.querySelector(`[data-export-table="${table}"]`);
-  if (button) button.disabled = !hasRows;
+  if (button) button.disabled = state.detailExportBusy && table === "detail" ? true : !hasRows;
+}
+
+function exportScopeSlug() {
+  return state.filters.masterCategory === "all"
+    ? "all-business-divisions"
+    : state.filters.masterCategory.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function workbookCell(row, column) {
+  const value = row[column.key];
+  if (column.date) return longDate(value);
+  if (column.status) return value == null || value === "" ? "" : String(value);
+  if (column.numeric) {
+    const number = finite(value);
+    return number == null ? null : (column.decimals == null ? number : Number(number.toFixed(column.decimals)));
+  }
+  return value == null || value === "" ? "" : String(value);
+}
+
+function incidentBreakdownColumns(prefix, missing = []) {
+  const skip = new Set(missing);
+  return [
+    { key: "OutletCode", label: "Outlet Code" },
+    { key: "OutletName", label: "Outlet Name" },
+    { key: "RHO", label: "RHO" },
+    { key: "Zonal", label: "Zonal" },
+    { key: "CreatedBy", label: "User Code" },
+    { key: "Category", label: "Category3" },
+    { key: "OpeningStock", label: "Opening Stock", numeric: true },
+    { key: "Receiving", label: "Receiving Qty", numeric: true },
+    { key: "TotalInventory", label: "Total Inventory", numeric: true },
+    { key: "TotalSales", label: "Total Sales Qty", numeric: true },
+    { key: "StdStockDays", label: "STD. Stock Days", numeric: true, decimals: 2 },
+    { key: "EstimatedClosingStock", label: "Est. Closing Stock", numeric: true },
+    ...incidentManagementColumns(prefix),
+    { key: `${prefix}Incidents`, label: `${prefix} Receiving Incidents`, numeric: true },
+    { key: `${prefix}IncidentPct`, label: `${prefix} Receiving Incident%`, numeric: true, decimals: 2 },
+  ].filter(column => !skip.has(column.key));
+}
+
+/**
+ * The user-incident table exports as a two-sheet workbook: the visible,
+ * filtered and sorted user rows, plus the category-level incident rows behind
+ * exactly those outlet/user pairs. A CSV cannot hold two sheets, so this is a
+ * real .xlsx built in the browser.
+ */
+async function exportIncidentWorkbook(button) {
+  const rows = state.visibleRows.detail || [];
+  if (!rows.length || state.detailExportBusy) return;
+
+  const under = incidentTableType() === "under";
+  const prefix = under ? "Under" : "Over";
+  const originalLabel = button?.textContent;
+  state.detailExportBusy = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparing…";
+  }
+
+  try {
+    const userColumns = state.detailColumns;
+    const userSheet = [
+      userColumns.map(column => column.label),
+      ...rows.map(row => userColumns.map(column => workbookCell(row, column))),
+    ];
+
+    const order = new Map();
+    rows.forEach((row, index) => order.set(`${row.OutletCode ?? ""}\u001f${row.CreatedBy ?? ""}`, index));
+    const outletCodes = [...new Set(rows.map(row => row.OutletCode).filter(Boolean))];
+
+    let breakdownSheet;
+    let breakdownName = `${prefix} incidents by category`;
+    try {
+      const filters = { ...currentManagementFilters(), region: "all", outletCodes };
+      const result = await state.client.loadIncidentCategoryBreakdown(filters, {
+        range: state.data.range,
+        scope: state.data.scope,
+        mode: under ? "under" : "over",
+      });
+      const columns = incidentBreakdownColumns(prefix, result.missing || []);
+      const detailRows = normalizeManagementRows(result.rows)
+        .filter(row => order.has(`${row.OutletCode ?? ""}\u001f${row.CreatedBy ?? ""}`))
+        .filter(row => (finite(row[`${prefix}Incidents`]) ?? 0) > 0 || (finite(row[`${prefix}Value`]) ?? 0) !== 0)
+        .sort((left, right) => {
+          const rank = order.get(`${left.OutletCode ?? ""}\u001f${left.CreatedBy ?? ""}`) - order.get(`${right.OutletCode ?? ""}\u001f${right.CreatedBy ?? ""}`);
+          if (rank) return rank;
+          return (finite(right[`${prefix}Incidents`]) ?? 0) - (finite(left[`${prefix}Incidents`]) ?? 0);
+        });
+      breakdownSheet = [columns.map(column => column.label), ...detailRows.map(row => columns.map(column => workbookCell(row, column)))];
+      if (detailRows.length === 0) breakdownSheet.push([`No ${prefix.toLocaleLowerCase()}-receiving category rows were returned for these outlet and user codes.`]);
+    } catch (error) {
+      console.warn("Category incident breakdown could not be loaded", error);
+      breakdownSheet = [
+        ["Category detail unavailable"],
+        [error?.message || "The source did not return the category-level incident rows."],
+        ["Reopen the user table and export again once the source responds."],
+      ];
+    }
+
+    await downloadWorkbook(
+      [
+        { name: `${prefix} incidents by user`, rows: userSheet },
+        { name: breakdownName, rows: breakdownSheet },
+      ],
+      `receiving-${prefix.toLocaleLowerCase()}-incidents-${exportScopeSlug()}-${state.data?.range?.endExclusive || "current"}.xlsx`
+    );
+  } catch (error) {
+    console.error("Incident workbook export failed", error);
+    dom.detailError.hidden = false;
+    dom.detailError.textContent = `${error?.message || "The workbook could not be created."} Try the export again.`;
+  } finally {
+    state.detailExportBusy = false;
+    if (button) {
+      button.textContent = originalLabel || "Visible CSV";
+      button.disabled = !(state.visibleRows.detail || []).length;
+    }
+  }
 }
 
 function sortRows(rows, table) {
@@ -1063,13 +1316,15 @@ function drillNumber(display, rawValue, metric, contextType, contextValue, conte
 }
 
 function renderRegions(rows) {
+  const valueKey = modeValueKey();
   const values = rows.map(row => {
     const receiving = finite(row.Receiving) ?? 0;
     const sales = finite(row.Sales) ?? 0;
     const Gap = receiving - sales;
     const Incidents = (finite(row.OverIncidents) ?? 0) + (finite(row.UnderIncidents) ?? 0);
     const Position = positionForGap(Gap).label;
-    return { ...row, Receiving: receiving, Sales: sales, Gap, Incidents, Position };
+    const UnderValue = underValueFor("regions", row.Region ?? "");
+    return { ...row, UnderValue, Receiving: receiving, Sales: sales, Gap, Incidents, Position };
   });
   const sorted = sortRows(values, "region");
   state.visibleRows.region = sorted;
@@ -1088,7 +1343,7 @@ function renderRegions(rows) {
       <td class="numeric">${drillNumber(compact(row.Receiving), row.Receiving, "Receiving", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(compact(row.Sales), row.Sales, "Sales", "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(signedCompact(row.Gap), row.Gap, "Gap", "region", contextValue, label, row.Gap > 0 ? "is-positive" : row.Gap < 0 ? "is-negative" : "")}</td>
-      <td class="numeric">${drillNumber(bdt(row.OverValue), row.OverValue, "OverValue", "region", contextValue, label)}</td>
+      <td class="numeric">${drillNumber(bdt(row[valueKey]), row[valueKey], valueKey, "region", contextValue, label)}</td>
       <td class="numeric">${drillNumber(exact(row.Incidents), row.Incidents, "Incidents", "region", contextValue, label)}</td>
       <td>${drillText(position.label, "Gap", "region", contextValue, label, `position-pill ${position.className}`)}</td></tr>`;
   }).join("");
@@ -1099,14 +1354,30 @@ function largestBy(rows, field) {
 }
 
 function renderSignals(data) {
-  const topCategory = largestBy(data.categories, "OverValue");
+  const under = isUnderMode();
+  const word = under ? "under-receiving" : "over-receiving";
+  const valueKey = modeValueKey();
+  const incidentKey = modeIncidentKey();
+  const categories = (data.categories || []).map(row => ({ ...row, UnderValue: underValueFor("categories", row.Category) }));
+  const topCategoryValue = largestBy(categories, valueKey);
+  const topCategoryIncidents = largestBy(categories, incidentKey);
   const regions = data.regions.map(row => ({ ...row, TotalIncidents: (finite(row.OverIncidents) ?? 0) + (finite(row.UnderIncidents) ?? 0) }));
   const topRegion = largestBy(regions, "TotalIncidents");
-  const topOutlet = largestBy(data.enrichedOutlets.filter(row => row.OutletCode), "OverValue");
+  const outlets = data.enrichedOutlets.filter(row => row.OutletCode);
+  const topOutlet = under ? largestBy(outlets, "UnderIncidents") : largestBy(outlets, "OverValue");
+  const categorySignal = topCategoryValue
+    ? { title: `${topCategoryValue.Category} is the largest value exposure`, detail: `${bdt(topCategoryValue[valueKey])} of ${word} value in the category context; this Power BI value measure is non-additive across rows.` }
+    : topCategoryIncidents && { title: `${topCategoryIncidents.Category} carries the most ${word} incidents`, detail: `${exact(topCategoryIncidents[incidentKey])} incidents in the category context for the selected window.` };
   const signals = [
-    topCategory && { title: `${topCategory.Category} is the largest value exposure`, detail: `${bdt(topCategory.OverValue)} in the category context; this Power BI value measure is non-additive across rows.` },
+    categorySignal,
     topRegion && { title: `${plainRegion(topRegion)} has the most incidents`, detail: `${exact(topRegion.TotalIncidents)} combined over- and under-receiving incidents in the selected window.` },
-    topOutlet && { title: `${plainOutlet(topOutlet)} leads the outlet action queue`, detail: `${bdt(topOutlet.OverValue)} over-receiving value under ${topOutlet.RHO} / ${topOutlet.Zonal}.`, link: true },
+    topOutlet && {
+      title: `${plainOutlet(topOutlet)} leads the outlet action queue`,
+      detail: under
+        ? `${exact(topOutlet.UnderIncidents)} under-receiving incidents under ${topOutlet.RHO} / ${topOutlet.Zonal}.`
+        : `${bdt(topOutlet.OverValue)} over-receiving value under ${topOutlet.RHO} / ${topOutlet.Zonal}.`,
+      link: true,
+    },
   ].filter(Boolean);
 
   dom.managementSignals.innerHTML = signals.length
@@ -1189,9 +1460,11 @@ function renderAll(data) {
   renderKpis(kpi, data);
   renderTrend(data.trend || []);
   renderCategoryChart(data.categories || []);
+  applyModeToRegionHeader();
   renderRegions(data.regions || []);
   renderSignals(data);
   renderOutlets();
+  if (isUnderMode()) ensureUnderValues();
 }
 
 function switchView(view) {
@@ -1215,6 +1488,7 @@ function metricDefinition(metric) {
     Inventory: { title: "Inventory", field: "Inventory", formatter: compact },
     StockDay: { title: "Stock cover", field: "StockDay", formatter: value => finite(value) == null ? "—" : `${Number(value).toFixed(1)} days` },
     OverValue: { title: "Over-receiving value", field: "OverValue", formatter: bdt },
+    UnderValue: { title: "Under-receiving value", field: "UnderValue", formatter: bdt },
     OverIncidents: { title: "Over-receiving incidents", field: "OverIncidents", formatter: exact },
     OverIncidentPct: { title: "Over-receiving rate", field: "OverIncidentPct", formatter: percentage },
     UnderIncidents: { title: "Under-receiving incidents", field: "UnderIncidents", formatter: exact },
@@ -1251,7 +1525,7 @@ function openDialog() {
 }
 
 function detailCacheKey(filters, tableNumber) {
-  return JSON.stringify({ tableNumber, filters });
+  return JSON.stringify({ tableNumber, mode: incidentTableType(), filters });
 }
 
 function selectedMetricValue(metric, context) {
@@ -1269,6 +1543,11 @@ function selectedMetricValue(metric, context) {
     }
     return finite(row[metric]);
   };
+  if (metric === "UnderValue") {
+    if (context?.type === "region") return underValueFor("regions", context.value === "__UNASSIGNED__" ? "" : context.value);
+    if (context?.type === "category") return underValueFor("categories", context.value);
+    if (!context) return finite(state.data.resolvedUnderValue);
+  }
   if (context?.type === "outlet") return valueFor((state.data.enrichedOutlets || []).find(row => normalizeOutletCode(row.OutletCode) === normalizeOutletCode(context.value)));
   if (context?.type === "region") return valueFor((state.data.regions || []).find(row => String(row.Region ?? "__UNASSIGNED__") === String(context.value)));
   if (context?.type === "category") return valueFor((state.data.categories || []).find(row => String(row.Category) === String(context.value)));
@@ -1280,7 +1559,7 @@ function initialManagementTable(metric, context) {
   if (["OverIncidents", "OverIncidentPct", "UnderIncidents", "UnderIncidentPct", "Incidents"].includes(metric)) return 6;
   if (context?.type === "category") return 4;
   if (context?.type === "outlet") return 1;
-  if (context?.type === "region" || metric === "ActiveOutlets" || metric === "OverValue") return 3;
+  if (context?.type === "region" || metric === "ActiveOutlets" || metric === "OverValue" || metric === "UnderValue") return 3;
   return 1;
 }
 
@@ -1312,7 +1591,7 @@ function currentManagementFilters() {
   const filters = detailFiltersForContext(state.detailContext);
   // The first five tables reproduce the saved Power BI "Over Receiving" page.
   // If the overview combines divisions, keep the page's saved division there.
-  if (state.detailTableNumber !== 6 && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
+  if (state.detailTableNumber !== 6 && !state.detailFollowsIncidentScope && filters.masterCategory === "all" && state.data?.scope?.masterCategory) {
     filters.masterCategory = state.data.scope.masterCategory;
   }
   const additions = state.detailRowFilters;
@@ -1337,6 +1616,9 @@ function configureManagementTable(tableNumber) {
   state.detailTableNumber = Number(tableNumber) || 1;
   state.detailColumns = table.columns;
   state.sorts.detail = { key: table.defaultSort, direction: table.defaultDirection || "desc" };
+  state.detailColumnFilters = {};
+  // Force the header, and with it the per-column search inputs, to rebuild.
+  state.detailHeaderSignature = "";
   dom.detailTableGrid.classList.toggle("incident-user-table", state.detailTableNumber === 6);
   setText("detail-title", table.title);
   setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
@@ -1368,7 +1650,11 @@ function normalizeManagementRows(rows) {
 }
 
 async function loadManagementTable(tableNumber, { preserveRowFilters = true } = {}) {
-  if (!preserveRowFilters) state.detailRowFilters = {};
+  if (!preserveRowFilters) {
+    state.detailRowFilters = {};
+    state.detailFollowsIncidentScope = false;
+  }
+  state.detailMissingColumns = [];
   configureManagementTable(tableNumber);
   const sequence = ++state.detailSequence;
   dom.detailLoading.hidden = false;
@@ -1381,16 +1667,21 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
     const cached = state.detailCache.get(cacheKey);
     if (cached && Date.now() - cached.savedAt < DETAIL_CACHE_MS) {
       state.detailRows = cached.rows;
+      state.detailMissingColumns = cached.missing || [];
     } else {
       const result = await state.client.loadManagementTable(filters, state.detailTableNumber, {
         range: state.data.range,
         scope: state.data.scope,
+        mode: incidentTableType(),
       });
       if (sequence !== state.detailSequence) return;
       state.detailRows = normalizeManagementRows(result.rows);
-      state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows });
+      state.detailMissingColumns = result.missing || [];
+      state.detailCache.set(cacheKey, { savedAt: Date.now(), rows: state.detailRows, missing: state.detailMissingColumns });
     }
     if (sequence !== state.detailSequence) return;
+    // Re-apply the definition now that unpublished measures are known.
+    configureManagementTable(state.detailTableNumber);
     dom.detailLoading.hidden = true;
     dom.detailContent.hidden = false;
     renderDetail();
@@ -1404,14 +1695,16 @@ async function loadManagementTable(tableNumber, { preserveRowFilters = true } = 
 
 async function openDrill(metric, context = null, rawValue = null) {
   if (!state.data) return;
-  const definition = metricDefinition(metric);
-  if (String(metric).startsWith("Under")) state.incidentMode = "under";
-  else if (String(metric).startsWith("Over") && metric !== "OverValue") state.incidentMode = "over";
+  const implied = String(metric).startsWith("Under")
+    ? "under"
+    : (String(metric).startsWith("Over") && metric !== "OverValue" ? "over" : null);
+  if (implied && implied !== state.incidentMode) selectIncidentMode(implied, { refreshDialog: false });
   dom.incidentFilter.value = state.incidentMode;
   state.detailMetric = metric;
   state.detailContext = context;
   state.detailDrillValue = finite(rawValue) ?? selectedMetricValue(metric, context);
   state.detailRowFilters = {};
+  state.detailFollowsIncidentScope = false;
   state.detailSourceSearch = null;
   window.clearTimeout(state.detailSearchTimer);
   state.detailSearch = "";
@@ -1423,18 +1716,21 @@ async function openDrill(metric, context = null, rawValue = null) {
 function renderDetailSummary(totalRows) {
   const definition = metricDefinition(state.detailMetric);
   const value = state.detailDrillValue == null ? "—" : definition.formatter(state.detailDrillValue);
-  const overValueGrouped = state.detailMetric === "OverValue" && !state.detailContext && state.data?.overValueUsesGroupedContext;
+  const isValueMetric = ["OverValue", "UnderValue"].includes(state.detailMetric);
+  const overValueGrouped = isValueMetric && !state.detailContext
+    && (state.detailMetric === "UnderValue" ? state.data?.underValueUsesGroupedContext : state.data?.overValueUsesGroupedContext);
   const cards = [
-    [overValueGrouped ? "Grouped source value" : state.detailMetric === "OverValue" ? "Source DAX total" : "Clicked source value", value],
+    [overValueGrouped ? "Grouped source value" : isValueMetric ? "Source DAX total" : "Clicked source value", value],
     ["Returned rows", exact(totalRows)],
     ["Data window", dateRangeLabel(state.data.range)],
     ["Selected scope", detailScopeLabel()],
   ];
   dom.detailSummary.innerHTML = cards.map(([label, cardValue]) => `<div class="detail-summary-card"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(cardValue)}">${escapeHtml(cardValue)}</strong></div>`).join("");
+  const valueName = state.detailMetric === "UnderValue" ? "Under Receiving Value" : "Over Receiving Value";
   dom.detailMeasureNote.innerHTML = overValueGrouped
-    ? "<strong>Calculation rule:</strong> Power BI returns a blank grand total for Over Receiving Value, so the headline uses the complete category-level source results for the selected scope; visible drill-down rows do not recalculate it."
-    : state.detailMetric === "OverValue"
-      ? "<strong>Why totals can differ:</strong> Power BI’s Over Receiving Value is a context-sensitive DAX measure. This view preserves the selected source total exactly; outlet and article rows are drill-down values and are never added to replace it."
+    ? `<strong>Calculation rule:</strong> Power BI returns a blank grand total for ${valueName}, so the headline uses the complete category-level source results for the selected scope; visible drill-down rows do not recalculate it.`
+    : isValueMetric
+      ? `<strong>Why totals can differ:</strong> Power BI’s ${valueName} is a context-sensitive DAX measure. This view preserves the selected source total exactly; outlet and article rows are drill-down values and are never added to replace it.`
     : "<strong>Calculation rule:</strong> the clicked Power BI value and every management row are queried in the same date and filter context; displayed rows are not used to recalculate the source headline.";
 }
 
@@ -1457,11 +1753,48 @@ function applySort(table, key, additive = false) {
   if (table === "detail") renderDetail();
 }
 
+function columnSearchLabel(column) {
+  return column.status ? "status" : column.label;
+}
+
+function positionColumnFilters() {
+  const row = dom.detailHead.parentElement?.querySelector(".column-filter-row");
+  if (!row) return;
+  const offset = dom.detailHead.offsetHeight;
+  row.querySelectorAll("th").forEach(cell => { cell.style.top = `${offset}px`; });
+}
+
+function renderColumnFilterRow() {
+  const head = dom.detailHead.parentElement;
+  if (!head) return;
+  let row = head.querySelector(".column-filter-row");
+  if (!row) {
+    row = document.createElement("tr");
+    row.className = "column-filter-row";
+    head.append(row);
+  }
+  row.innerHTML = state.detailColumns.map(column => {
+    const label = columnSearchLabel(column);
+    const classes = column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : "";
+    return `<th${classes}><input class="column-search" type="search" autocomplete="off" data-column-filter="${escapeHtml(column.key)}" value="${escapeHtml(state.detailColumnFilters[column.key] || "")}" placeholder="Search" aria-label="Search ${escapeHtml(label)}" title="Search ${escapeHtml(label)}"></th>`;
+  }).join("");
+  window.requestAnimationFrame(positionColumnFilters);
+}
+
 function renderDetailHeader() {
+  const signature = `${state.detailTableNumber}:${state.detailColumns.map(column => column.key).join("|")}`;
+  // Rebuilding the header on every keystroke would drop focus out of the
+  // per-column search inputs, so it is only rebuilt when the columns change.
+  if (signature && signature === state.detailHeaderSignature) {
+    positionColumnFilters();
+    return;
+  }
+  state.detailHeaderSignature = signature;
   dom.detailHead.innerHTML = state.detailColumns.map(column => `<th scope="col" data-column-key="${escapeHtml(column.key)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}><button class="sort-button" type="button" data-sort-table="detail" data-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)} <span></span></button></th>`).join("");
   dom.detailHead.querySelectorAll(".sort-button").forEach(button => {
     button.addEventListener("click", event => applySort("detail", button.dataset.sortKey, event.shiftKey));
   });
+  renderColumnFilterRow();
 }
 
 function managementDisplay(row, column) {
@@ -1490,8 +1823,18 @@ function managementAction(row, column) {
     if (column.key === "MovementType" && row.MovementType) return { type: "movement", value: row.MovementType, label: `Movement ${row.MovementType}` };
     if (column.key === "CreatedBy" && row.CreatedBy) return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
   }
-  if (table === 6 && column.key === "CreatedBy" && row.CreatedBy) {
-    return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
+  if (table === 6) {
+    if (column.key === "CreatedBy" && row.CreatedBy) return { type: "user", value: row.CreatedBy, label: `User ${row.CreatedBy}` };
+    // Every incident count and rate opens the category-level incident list for
+    // that outlet and user.
+    if (["OverIncidents", "OverIncidentPct", "UnderIncidents", "UnderIncidentPct"].includes(column.key) && row.OutletCode) {
+      return {
+        type: "incidents",
+        value: row.OutletCode,
+        label: `${row.OutletName || row.OutletCode}${row.CreatedBy ? ` · ${row.CreatedBy}` : ""}`,
+        user: row.CreatedBy || "",
+      };
+    }
   }
   return null;
 }
@@ -1501,7 +1844,7 @@ function managementCell(row, column) {
   if (column.status) return `<span class="management-status-icon" title="Over-receiving score status">${escapeHtml(display)}</span>`;
   const action = managementAction(row, column);
   if (!action || display === "—") return escapeHtml(display);
-  const extra = action.outlet ? ` data-management-outlet="${escapeHtml(action.outlet)}"` : "";
+  const extra = `${action.outlet ? ` data-management-outlet="${escapeHtml(action.outlet)}"` : ""}${action.user ? ` data-management-user="${escapeHtml(action.user)}"` : ""}`;
   const className = column.numeric ? "number-link" : "text-link";
   return `<button class="${className} management-cell-link" type="button" data-management-action="${escapeHtml(action.type)}" data-management-value="${escapeHtml(action.value)}" data-management-label="${escapeHtml(action.label)}"${extra} title="Open linked management detail">${escapeHtml(display)}</button>`;
 }
@@ -1512,8 +1855,20 @@ function renderDetail() {
   const tableRows = state.detailTableNumber === 6
     ? state.detailRows.filter(row => (finite(row[incidentKey]) ?? 0) > 0)
     : state.detailRows;
-  const filtered = tableRows.filter(row => !query || [row.OutletCode, ...state.detailColumns.map(column => managementDisplay(row, column))]
-    .some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
+  const columnQueries = state.detailColumns
+    .map(column => ({ column, needle: String(state.detailColumnFilters[column.key] || "").trim().toLocaleLowerCase() }))
+    .filter(item => item.needle);
+  const matchesColumn = (row, column, needle) => {
+    const display = String(managementDisplay(row, column) ?? "").toLocaleLowerCase();
+    if (display.includes(needle)) return true;
+    // Let "2480" find a value shown as "2,480".
+    return display.replaceAll(",", "").includes(needle.replaceAll(",", ""));
+  };
+  const filtered = tableRows.filter(row => {
+    if (query && ![row.OutletCode, ...state.detailColumns.map(column => managementDisplay(row, column))]
+      .some(value => String(value ?? "").toLocaleLowerCase().includes(query))) return false;
+    return columnQueries.every(({ column, needle }) => matchesColumn(row, column, needle));
+  });
   const sorted = sortRows(filtered, "detail");
   const visible = sorted.slice(0, DETAIL_ROW_LIMIT);
   state.visibleRows.detail = visible;
@@ -1860,17 +2215,38 @@ function applyPoSearch() {
   loadDashboard();
 }
 
-function selectIncidentMode(mode) {
-  state.incidentMode = mode === "under" ? "under" : "over";
-  state.exceptionFocus = state.incidentMode;
-  dom.incidentFilter.value = state.incidentMode;
+function selectIncidentMode(mode, { refreshDialog = true } = {}) {
+  const next = mode === "under" ? "under" : "over";
+  const changed = state.incidentMode !== next;
+  state.incidentMode = next;
+  state.exceptionFocus = next;
+  dom.incidentFilter.value = next;
   state.sorts.outlet = { key: focusConfig[state.exceptionFocus].field, direction: "desc" };
-  renderOutlets();
-  if (dom.detailDialog.open && state.detailTableNumber === 6) {
-    state.detailMetric = state.incidentMode === "under" ? "UnderIncidents" : "OverIncidents";
+  if (["OverValue", "UnderValue"].includes(state.sorts.region.key)) {
+    state.sorts.region = { ...state.sorts.region, key: modeValueKey() };
+  }
+
+  if (state.data) renderAll(state.data);
+  else applyIncidentModeVisibility();
+
+  // A previous attempt that failed on the network is worth retrying when the
+  // user deliberately switches back to Under.
+  if (next === "under" && state.underValue.status === "error") ensureUnderValues({ force: true });
+
+  if (!refreshDialog || !dom.detailDialog.open || !changed) return;
+  if (state.detailTableNumber === 6) {
+    state.detailMetric = next === "under" ? "UnderIncidents" : "OverIncidents";
     state.detailDrillValue = selectedMetricValue(state.detailMetric, state.detailContext);
     configureManagementTable(6);
     renderDetail();
+    return;
+  }
+  if ([1, 2, 3, 4].includes(state.detailTableNumber)) {
+    if (["OverValue", "UnderValue"].includes(state.detailMetric)) {
+      state.detailMetric = modeValueKey();
+      state.detailDrillValue = selectedMetricValue(state.detailMetric, state.detailContext);
+    }
+    loadManagementTable(state.detailTableNumber);
   }
 }
 
@@ -1899,13 +2275,12 @@ document.querySelectorAll(".view-tab").forEach(tab => {
 
 document.querySelectorAll(".focus-button").forEach(button => {
   button.addEventListener("click", () => {
-    state.exceptionFocus = button.dataset.focus;
-    if (["over", "under"].includes(state.exceptionFocus)) {
-      state.incidentMode = state.exceptionFocus;
-      dom.incidentFilter.value = state.incidentMode;
+    if (["over", "under"].includes(button.dataset.focus)) {
+      selectIncidentMode(button.dataset.focus);
+      return;
     }
-    const field = focusConfig[state.exceptionFocus].field;
-    state.sorts.outlet = { key: field, direction: "desc" };
+    state.exceptionFocus = button.dataset.focus;
+    state.sorts.outlet = { key: focusConfig[state.exceptionFocus].field, direction: "desc" };
     renderOutlets();
   });
 });
@@ -1915,7 +2290,39 @@ document.querySelectorAll(".sort-button").forEach(button => {
 });
 
 document.querySelectorAll("[data-export-table]").forEach(button => {
-  button.addEventListener("click", () => exportVisibleCsv(button.dataset.exportTable));
+  button.addEventListener("click", () => {
+    // The user-incident table exports both its own rows and the category rows
+    // behind them, which needs a two-sheet workbook rather than a CSV.
+    if (button.dataset.exportTable === "detail" && state.detailTableNumber === 6) {
+      exportIncidentWorkbook(button);
+      return;
+    }
+    exportVisibleCsv(button.dataset.exportTable);
+  });
+});
+
+dom.detailTableGrid.addEventListener("input", event => {
+  const input = event.target.closest("[data-column-filter]");
+  if (!input) return;
+  state.detailColumnFilters[input.dataset.columnFilter] = input.value;
+  window.clearTimeout(state.detailColumnFilterTimer);
+  state.detailColumnFilterTimer = window.setTimeout(renderDetail, 140);
+});
+
+dom.detailTableGrid.addEventListener("keydown", event => {
+  const input = event.target.closest("[data-column-filter]");
+  if (!input || !["Enter", "Escape"].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === "Escape") {
+    input.value = "";
+    state.detailColumnFilters[input.dataset.columnFilter] = "";
+  }
+  window.clearTimeout(state.detailColumnFilterTimer);
+  renderDetail();
+});
+
+window.addEventListener("resize", () => {
+  if (dom.detailDialog.open) positionColumnFilters();
 });
 
 dom.main.addEventListener("click", event => {
@@ -1950,7 +2357,19 @@ dom.detailDialog.addEventListener("click", event => {
   state.detailSourceSearch = null;
   state.detailSearch = "";
   dom.detailSearch.value = "";
-  if (link.dataset.managementAction === "outlet") {
+  if (link.dataset.managementAction === "incidents") {
+    state.detailRowFilters = {
+      outletCodes: [normalizeOutletCode(value)],
+      ...(link.dataset.managementUser ? { userCode: link.dataset.managementUser } : {}),
+    };
+    // Table 6 spans every business division, so the category list it opens
+    // must not fall back to the saved page's single division.
+    state.detailFollowsIncidentScope = true;
+    state.detailMetric = incidentTableType() === "under" ? "UnderIncidents" : "OverIncidents";
+    state.detailContext = { type: "outlet", value: normalizeOutletCode(value), label: link.dataset.managementLabel || value };
+    state.detailDrillValue = finite(link.textContent.replaceAll(",", "")) ?? state.detailDrillValue;
+    loadManagementTable(4);
+  } else if (link.dataset.managementAction === "outlet") {
     state.detailRowFilters = { outletCodes: [normalizeOutletCode(value)] };
     loadManagementTable(1);
   } else if (link.dataset.managementAction === "category") {
@@ -2095,6 +2514,10 @@ dom.resetButton.addEventListener("click", () => {
   state.filters = { ...DEFAULT_FILTERS };
   state.incidentMode = "over";
   state.exceptionFocus = "over";
+  state.underValue = { key: "", status: "idle", kpi: null, categories: new Map(), regions: new Map() };
+  if (["OverValue", "UnderValue"].includes(state.sorts.region.key)) state.sorts.region = { key: "OverValue", direction: "desc" };
+  applyIncidentModeVisibility();
+  applyModeToRegionHeader();
   dom.periodFilter.value = "30";
   dom.fromDateFilter.removeAttribute("aria-invalid");
   dom.toDateFilter.removeAttribute("aria-invalid");

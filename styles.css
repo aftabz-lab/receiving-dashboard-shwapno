@@ -557,7 +557,7 @@ a { color: inherit; }
 .kpi-grid {
   margin-top: 18px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1.2fr)) minmax(0, 1.1fr) repeat(3, minmax(0, .9fr));
+  grid-template-columns: repeat(4, minmax(0, 1.2fr)) minmax(0, 1.1fr) repeat(2, minmax(0, .9fr));
   gap: 12px;
 }
 
@@ -1805,3 +1805,53 @@ html[data-theme="dark"] .csv-button:hover { background: #1b4650; }
 @media (max-width: 760px) {
   .detail-toolbar-actions { justify-content: space-between; }
 }
+
+
+/* ---------------------------------------------------------------------------
+   Additive block: per-column search on the management tables, and the Under
+   Receiving columns styled to match their Over Receiving counterparts.
+   Nothing above this line is edited.
+--------------------------------------------------------------------------- */
+
+.detail-table .column-filter-row th {
+  position: sticky;
+  z-index: 2;
+  padding: 6px 8px;
+  border-color: #7183bd;
+  background: #34499126;
+  background-color: #3a53a0;
+}
+
+.detail-table .column-filter-row th.numeric { text-align: right; }
+
+.column-search {
+  width: 100%;
+  min-width: 0;
+  height: 27px;
+  padding: 0 8px;
+  border: 1px solid #93a6dd;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1d2b45;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.column-search::placeholder { color: #8b96ab; font-weight: 500; }
+
+.column-search:focus-visible {
+  outline: 2px solid #d5f7fa;
+  outline-offset: 1px;
+  border-color: #d5f7fa;
+}
+
+.detail-table .status-column .column-search { padding: 0 4px; text-align: center; }
+
+.detail-table td[data-column-key="UnderReceiving"] { background: #eef4ff; color: #29508f; font-weight: 800; }
+.detail-table td[data-column-key="UnderValue"] { color: #2f4f86; font-weight: 800; }
+
+html[data-theme="dark"] .detail-table .column-filter-row th { background-color: #2d4183; }
+html[data-theme="dark"] .column-search { border-color: #4a5f9e; background: #0d1e2c; color: var(--ink); }
+html[data-theme="dark"] .detail-table td[data-column-key="UnderReceiving"] { background: #1b2b45; color: #9dc0ff; }
+html[data-theme="dark"] .detail-table td[data-column-key="UnderValue"] { color: #a8c4ff; }
