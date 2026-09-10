@@ -1261,6 +1261,32 @@ a { color: inherit; }
 
 .filter-grid .filter-field { min-width: 0; }
 
+.incident-export-pair {
+  min-width: 0;
+  display: grid;
+  grid-column: span 2;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.management-excel-button {
+  min-width: 220px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #167a83;
+  border-radius: 9px;
+  background: #0b7b86;
+  color: white;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.management-excel-button:hover { background: #086b74; }
+.management-excel-button:disabled { opacity: .5; cursor: not-allowed; }
+
 .filter-field input {
   width: 100%;
   min-height: 38px;
@@ -1699,6 +1725,14 @@ html[data-theme="dark"] .focus-button.is-active { background: #1e394d; color: #e
 html[data-theme="dark"] .search-field,
 html[data-theme="dark"] .filter-field select,
 html[data-theme="dark"] .filter-field input { background: #0d1e2c; color: var(--ink); }
+
+html[data-theme="dark"] .management-excel-button {
+  border-color: #4b9ca5;
+  background: #176a74;
+  color: white;
+}
+
+html[data-theme="dark"] .management-excel-button:hover { background: #1b7b86; }
 html[data-theme="dark"] .management-table-tabs button { background: #132738; }
 html[data-theme="dark"] .management-table-tabs button.is-active { background: #405aa7; color: white; }
 html[data-theme="dark"] .detail-measure-note { border-color: #28545b; background: #102e35; color: #b9d9dd; }
@@ -1750,6 +1784,8 @@ html[data-theme="dark"] .dashboard-footer { background: #0b1c2a; }
   .filter-panel.is-open { max-height: 970px; }
   .control-actions { flex-wrap: wrap; }
   .detail-summary { grid-template-columns: 1fr; }
+  .incident-export-pair { grid-column: auto; grid-template-columns: 1fr; }
+  .management-excel-button { width: 100%; min-width: 0; }
 }
 
 /* v6: fast drill-through, visible-row exports and filter alignment */

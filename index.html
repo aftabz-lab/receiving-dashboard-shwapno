@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260910-7">
+  <link rel="stylesheet" href="./styles.css?v=20260910-8">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -76,7 +76,10 @@
         <label class="filter-field search-combo"><span>User code</span><input id="user-filter" type="search" list="user-options" autocomplete="off" placeholder="All users · type to search"><datalist id="user-options"></datalist></label>
         <label class="filter-field search-combo"><span>PO Number</span><input id="po-filter" type="search" inputmode="numeric" autocomplete="off" placeholder="All PO numbers · enter exact number"></label>
         <label class="filter-field search-combo"><span>Movement code</span><input id="movement-filter" type="search" list="movement-options" autocomplete="off" placeholder="All movements · type to search"><datalist id="movement-options"></datalist></label>
-        <label class="filter-field"><span>Receiving incident</span><select id="incident-filter"><option value="over" selected>Over receiving</option><option value="under">Under receiving</option></select></label>
+        <div class="incident-export-pair">
+          <label class="filter-field"><span>Receiving incident</span><select id="incident-filter"><option value="over" selected>Over receiving</option><option value="under">Under receiving</option></select></label>
+          <button id="management-excel-download" class="management-excel-button" type="button" disabled>Download Management Excel</button>
+        </div>
       </div>
       <div class="filter-foot">
         <span id="cascade-note">Each selection shortens the related RHO, Zonal, outlet, category, article, user and movement options; enter an exact PO number to search.</span>
@@ -218,6 +221,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260910-7"></script>
+  <script type="module" src="./app.js?v=20260910-8"></script>
 </body>
 </html>

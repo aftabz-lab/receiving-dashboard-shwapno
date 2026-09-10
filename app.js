@@ -1,11 +1,11 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-7";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-8";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v4";
-const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v3";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v5";
+const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v4";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = Number.POSITIVE_INFINITY;
 const DATALIST_RENDER_LIMIT = 250;
@@ -69,6 +69,7 @@ const state = {
   detailHeaderSignature: "",
   detailMissingColumns: [],
   detailExportBusy: false,
+  managementExportBusy: false,
   underValue: { key: "", status: "idle", kind: "value", kpi: null, categories: new Map(), regions: new Map() },
   detailSourceSearch: null,
   detailSearchTimer: 0,
@@ -109,6 +110,7 @@ const dom = {
   poFilter: el("po-filter"),
   movementFilter: el("movement-filter"),
   incidentFilter: el("incident-filter"),
+  managementExcelButton: el("management-excel-download"),
   outletOptions: el("outlet-options"),
   articleOptions: el("article-options"),
   userOptions: el("user-options"),
@@ -662,6 +664,7 @@ function setLoading(loading) {
   dom.refreshButton.classList.toggle("is-refreshing", loading);
   [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.poFilter, dom.movementFilter, dom.incidentFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
+  dom.managementExcelButton.disabled = loading || state.managementExportBusy || !state.data;
 
   if (loading) {
     dom.statusDot.className = "status-dot is-loading";
@@ -1123,15 +1126,15 @@ function incidentTableType() {
   return state.incidentMode;
 }
 
-function managementTableDefinition(tableNumber) {
+function managementTableDefinitionFor(tableNumber, mode, missingColumns = []) {
   const number = Number(tableNumber) || 1;
-  const under = incidentTableType() === "under";
+  const under = mode === "under";
   const prefix = under ? "Under" : "Over";
   const definitions = managementTableDefinitions(prefix);
   const definition = definitions[number] || definitions[1];
-  // A published model may not mirror every "Over" measure on the "Under" side;
+  // A published model may not expose every decorative or incident measure;
   // those columns are dropped rather than shown as empty ones.
-  const missing = new Set(under ? state.detailMissingColumns : []);
+  const missing = new Set(missingColumns);
   const columns = definition.columns.filter(column => !missing.has(column.key));
   // The published page sorts the Over tables by Over Receiving Value and the
   // Under tables by Under Receiving Score; fall back down that chain to
@@ -1144,6 +1147,10 @@ function managementTableDefinition(tableNumber) {
     || columns.find(column => column.numeric)?.key
     || columns[0].key;
   return { ...definition, columns, defaultSort };
+}
+
+function managementTableDefinition(tableNumber) {
+  return managementTableDefinitionFor(tableNumber, incidentTableType(), state.detailMissingColumns);
 }
 
 function csvColumns(table) {
@@ -1204,7 +1211,7 @@ function exportScopeSlug() {
 }
 
 function workbookCell(row, column) {
-  const value = row[column.key];
+  const value = column.value ? column.value(row) : row[column.key];
   if (column.date) return longDate(value);
   if (column.status) return value == null || value === "" ? "" : String(value);
   if (column.numeric) {
@@ -1212,6 +1219,124 @@ function workbookCell(row, column) {
     return number == null ? null : (column.decimals == null ? number : Number(number.toFixed(column.decimals)));
   }
   return value == null || value === "" ? "" : String(value);
+}
+
+function selectedIncidentRows(rows, tableNumber, mode) {
+  if (Number(tableNumber) !== 6) return rows;
+  const prefix = mode === "under" ? "Under" : "Over";
+  return rows.filter(row => (finite(row[`${prefix}Incidents`]) ?? 0) > 0);
+}
+
+function sortManagementWorkbookRows(rows, definition) {
+  const key = definition.defaultSort;
+  const direction = definition.defaultDirection || "desc";
+  return [...rows].sort((left, right) => {
+    const a = left[key];
+    const b = right[key];
+    const an = finite(a);
+    const bn = finite(b);
+    const result = an != null && bn != null
+      ? an - bn
+      : String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+    return result * (direction === "asc" ? 1 : -1);
+  });
+}
+
+function managementSheetRows(rows, definition) {
+  return [
+    definition.columns.map(column => column.label),
+    ...rows.map(row => definition.columns.map(column => workbookCell(row, column))),
+  ];
+}
+
+function outletDetailColumns() {
+  return [
+    { key: "Rank", label: "Rank", numeric: true, value: row => row.__rank },
+    { key: "OutletCode", label: "Outlet code" },
+    { key: "Outlet", label: "Outlet name", value: row => plainOutlet(row) },
+    { key: "Region", label: "Division", value: row => plainRegion(row) },
+    { key: "RHO", label: "RHO" },
+    { key: "Zonal", label: "Zonal" },
+    { key: "Area", label: "Area" },
+    { key: "Receiving", label: "Received", numeric: true },
+    { key: "Sales", label: "Sold", numeric: true },
+    { key: "Gap", label: "Balance", numeric: true },
+    { key: "StockDay", label: "Stock days", numeric: true, decimals: 2 },
+    { key: "OverValue", label: "Over value", numeric: true },
+    { key: "OverIncidents", label: "Over incidents", numeric: true },
+    { key: "UnderIncidents", label: "Under incidents", numeric: true },
+  ];
+}
+
+async function exportManagementWorkbook(button) {
+  if (!state.data || state.managementExportBusy) return;
+  const mode = state.incidentMode === "under" ? "under" : "over";
+  const prefix = mode === "under" ? "Under" : "Over";
+  const originalLabel = button.textContent;
+  const data = state.data;
+  const filters = buildPowerBIFilters();
+  const context = { range: data.range, scope: data.scope, mode };
+  const partitionOutletCodes = [...new Set((data.enrichedOutlets || []).map(row => row.OutletCode).filter(Boolean))];
+  state.managementExportBusy = true;
+  button.disabled = true;
+
+  try {
+    const sheets = [];
+    const sheetNames = [
+      "Table 1 Article",
+      "Table 2 Article Group",
+      "Table 3 Outlet",
+      "Table 4 Category",
+      "Table 5 PO Detail",
+      "Table 6 User Incidents",
+    ];
+
+    for (let tableNumber = 1; tableNumber <= 6; tableNumber += 1) {
+      button.textContent = `Loading table ${tableNumber} of 6…`;
+      const tableFilters = { ...filters };
+      if (tableNumber !== 6 && tableFilters.masterCategory === "all" && data.scope?.masterCategory) {
+        tableFilters.masterCategory = data.scope.masterCategory;
+      }
+      if (tableNumber === 6 && tableFilters.masterCategory === "all") {
+        tableFilters.partitionOutletCodes = partitionOutletCodes;
+      }
+      const result = await state.client.loadManagementTable(tableFilters, tableNumber, context, { complete: true });
+      const definition = managementTableDefinitionFor(tableNumber, mode, result.missing || []);
+      const rows = sortManagementWorkbookRows(
+        selectedIncidentRows(normalizeManagementRows(result.rows), tableNumber, mode),
+        definition
+      );
+      sheets.push({ name: sheetNames[tableNumber - 1], rows: managementSheetRows(rows, definition) });
+    }
+
+    button.textContent = "Building workbook…";
+    const outletKey = mode === "under" ? "UnderIncidents" : "OverValue";
+    const outletRows = [...(data.enrichedOutlets || [])]
+      .filter(row => row.OutletCode && (finite(row[outletKey]) ?? 0) > 0)
+      .sort((left, right) => (finite(right[outletKey]) ?? 0) - (finite(left[outletKey]) ?? 0))
+      .map((row, index) => ({ ...row, __rank: index + 1 }));
+    const detailColumns = outletDetailColumns();
+    sheets.push({
+      name: `${prefix} Outlet Details`,
+      rows: [
+        detailColumns.map(column => column.label),
+        ...outletRows.map(row => detailColumns.map(column => workbookCell(row, column))),
+      ],
+    });
+
+    await downloadWorkbook(
+      sheets,
+      `receiving-management-${mode}-${exportScopeSlug()}-${data.range?.endExclusive || "current"}.xlsx`
+    );
+    dom.cascadeNote.textContent = `${prefix} management workbook downloaded with Tables 1–6 and ${outletRows.length.toLocaleString("en-GB")} matching outlet rows.`;
+  } catch (error) {
+    console.error("Management workbook export failed", error);
+    dom.cascadeNote.textContent = `${error?.message || "The management workbook could not be created."} Please try the download again.`;
+  } finally {
+    state.managementExportBusy = false;
+    button.textContent = originalLabel || "Download Management Excel";
+    button.disabled = !state.data || dom.main.getAttribute("aria-busy") === "true";
+  }
 }
 
 function incidentBreakdownColumns(prefix, missing = []) {
@@ -1661,6 +1786,9 @@ function currentManagementFilters() {
     // An exact search follows the dashboard's active business-division scope.
     // When the dashboard is on All, query the article across all divisions.
     if (state.filters.masterCategory === "all") filters.masterCategory = "all";
+  }
+  if (state.detailTableNumber === 6 && filters.masterCategory === "all" && !filters.outletCodes) {
+    filters.partitionOutletCodes = [...new Set((state.data?.enrichedOutlets || []).map(row => row.OutletCode).filter(Boolean))];
   }
   return filters;
 }
@@ -2595,6 +2723,7 @@ dom.poFilter.addEventListener("input", () => {
 });
 
 dom.incidentFilter.addEventListener("change", event => selectIncidentMode(event.target.value));
+dom.managementExcelButton.addEventListener("click", () => exportManagementWorkbook(dom.managementExcelButton));
 
 dom.resetButton.addEventListener("click", () => {
   if (dateApplyTimer) {

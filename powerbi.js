@@ -13,6 +13,13 @@ const DEFAULT_MASTER_CATEGORIES = [
   "PACKED COMMODITY",
 ];
 const MAX_QUERY_ROWS = 30000;
+const OUTLET_QUERY_CHUNK = 100;
+
+function chunkValues(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
 
 function uuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -173,12 +180,26 @@ function numericMeasure(value, descriptor) {
   return Number.isFinite(parsed) ? parsed : value;
 }
 
+function powerBIDataError(data) {
+  const shapes = data?.dsr?.DataShapes;
+  if (!Array.isArray(shapes)) return null;
+  for (const shape of shapes) {
+    const error = shape?.["odata.error"] || shape?.error;
+    if (!error) continue;
+    return error?.message?.value || error?.message || error?.code || "Power BI could not resolve the requested fields.";
+  }
+  return null;
+}
+
 function decodeResult(resultEntry) {
   const data = resultEntry?.result?.data;
   if (!data) {
     const message = resultEntry?.result?.error?.message || "Power BI returned an empty result.";
     throw new Error(message);
   }
+
+  const semanticError = powerBIDataError(data);
+  if (semanticError) throw new Error(semanticError);
 
   const descriptors = data.descriptor?.Select || [];
   const dataSet = data.dsr?.DS?.[0];
@@ -239,6 +260,15 @@ function createQuery(select, from, where, count = 1200) {
     },
     QueryId: "",
   };
+}
+
+function continuationQuery(query, restartTokens) {
+  const next = JSON.parse(JSON.stringify(query));
+  const command = next.Query?.Commands?.[0]?.SemanticQueryDataShapeCommand;
+  const window = command?.Binding?.DataReduction?.Primary?.Window;
+  if (!window) throw new Error("Power BI continuation metadata is unavailable for this query.");
+  window.RestartTokens = restartTokens;
+  return next;
 }
 
 function commonWhere(range, scope, filters = {}, excluded = new Set()) {
@@ -359,6 +389,23 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
   }
 
   return conditions;
+}
+
+function articleIncidentWhere(conditions) {
+  return [
+    ...conditions,
+    {
+      Condition: {
+        Comparison: {
+          // Power BI ComparisonKind 1 is "greater than". This is the exact
+          // hidden filter used by the published article-incident table.
+          ComparisonKind: 1,
+          Left: { Measure: { Expression: { SourceRef: { Source: "vis" } }, Property: "Row Checking Measures" } },
+          Right: literal("0L"),
+        },
+      },
+    },
+  ];
 }
 
 const COMMON_FROM = [
@@ -705,7 +752,11 @@ export class PowerBIDataClient {
     const payload = await response.json();
     return specs.map((_, index) => {
       const entry = payload.results?.[index];
-      return Boolean(entry?.result?.data) && !entry?.result?.error;
+      const data = entry?.result?.data;
+      return Boolean(data)
+        && !entry?.result?.error
+        && !powerBIDataError(data)
+        && Array.isArray(data?.dsr?.DS);
     });
   }
 
@@ -734,14 +785,70 @@ export class PowerBIDataClient {
     }
 
     const decoded = {};
+    const restartTokens = {};
     specs.forEach((spec, index) => {
       decoded[spec.key] = decodeResult(payload.results?.[index]);
+      restartTokens[spec.key] = payload.results?.[index]?.result?.data?.dsr?.DS?.[0]?.RT || null;
     });
 
     return {
       decoded,
+      restartTokens,
       queryTimestamp: payload.results[0]?.result?.data?.timestamp || new Date().toISOString(),
     };
+  }
+
+  async runSpecsComplete(specs, { signal, maxPages = 400 } = {}) {
+    const first = await this.runSpecs(specs, { signal });
+    const decoded = Object.fromEntries(specs.map(spec => [spec.key, [...(first.decoded[spec.key] || [])]]));
+    let active = specs
+      .map(spec => ({ spec, token: first.restartTokens[spec.key] }))
+      .filter(item => item.token);
+    const seen = new Map(active.map(item => [item.spec.key, new Set([JSON.stringify(item.token)])]));
+    let page = 1;
+
+    while (active.length) {
+      if (page >= maxPages) throw new Error("Power BI returned more management rows than the safe export limit.");
+      const continuations = active.map(({ spec, token }) => ({
+        key: spec.key,
+        query: continuationQuery(spec.query, token),
+      }));
+      const result = await this.runSpecs(continuations, { signal });
+      const nextActive = [];
+
+      continuations.forEach(continuation => {
+        const rows = result.decoded[continuation.key] || [];
+        decoded[continuation.key].push(...rows);
+        const token = result.restartTokens[continuation.key];
+        if (!token) return;
+        if (!rows.length) throw new Error("Power BI returned a non-advancing management-data window.");
+        const fingerprint = JSON.stringify(token);
+        const tokens = seen.get(continuation.key) || new Set();
+        if (tokens.has(fingerprint)) throw new Error("Power BI repeated a management-data window.");
+        tokens.add(fingerprint);
+        seen.set(continuation.key, tokens);
+        const original = specs.find(spec => spec.key === continuation.key);
+        nextActive.push({ spec: original, token });
+      });
+
+      active = nextActive;
+      page += 1;
+    }
+
+    return { decoded, restartTokens: {}, queryTimestamp: first.queryTimestamp };
+  }
+
+  async runSpecsSequential(specs, { signal, complete = false } = {}) {
+    const decoded = {};
+    let queryTimestamp = null;
+    for (const spec of specs) {
+      const result = complete
+        ? await this.runSpecsComplete([spec], { signal })
+        : await this.runSpecs([spec], { signal });
+      decoded[spec.key] = result.decoded[spec.key] || [];
+      queryTimestamp ||= result.queryTimestamp;
+    }
+    return { decoded, restartTokens: {}, queryTimestamp: queryTimestamp || new Date().toISOString() };
   }
 
   async load(filters = {}, { section = "all", signal } = {}) {
@@ -927,7 +1034,7 @@ export class PowerBIDataClient {
     return { rows: decoded.articles, range, queryTimestamp };
   }
 
-  async loadManagementTable(filters = {}, tableNumber = 1, queryContext = null, { signal } = {}) {
+  async loadManagementTable(filters = {}, tableNumber = 1, queryContext = null, { signal, complete = false } = {}) {
     if (!this.model || !this.report || !this.scope) await this.connect({ signal });
     // Keep drill-downs in the exact snapshot context that produced the
     // clicked value, even if the published report refreshes afterward.
@@ -940,17 +1047,24 @@ export class PowerBIDataClient {
     // The movement-type list comes from the saved Over Receiving page; the
     // caller can drop it when that page's list does not cover the rows it needs.
     const excluded = filters.allMovementTypes ? new Set(["movement"]) : new Set();
-    const where = commonWhere(range, effectiveScope, filters, excluded);
     const table = Number(tableNumber) || 1;
+    const where = table === 1
+      ? articleIncidentWhere(commonWhere(range, effectiveScope, filters, excluded))
+      : commonWhere(range, effectiveScope, filters, excluded);
     const mode = queryContext?.mode === "under" ? "under" : "over";
     // Tables 1-4 mirror the saved "Over Receiving" page; the same shapes are
     // rebuilt against the Under measures when the incident mode is Under.
     const modeApplies = [1, 2, 3, 4].includes(table);
     if (modeApplies && mode === "under") await this.ensureUnderMeasureSupport({ range, scope: effectiveScope, signal });
+    const incidentNames = table === 4
+      ? ["receiving", "value", "score", "incidents", "incidentPct"]
+      : ["receiving", "value", "score"];
     const { resolved, missing } = this.resolveIncidentMeasures(
       modeApplies ? mode : "over",
-      table === 4 ? ["receiving", "value", "score", "icon", "incidents", "incidentPct"] : ["receiving", "value", "score", "icon"]
+      incidentNames
     );
+    if (modeApplies) missing.push("StatusIcon");
+    if ([1, 2, 3].includes(table)) missing.push("Sorting");
 
     const common = [
       measure("m", "Opening Stock", "OpeningStock"),
@@ -964,32 +1078,89 @@ export class PowerBIDataClient {
       measure("m", "Stock Day", "CurrentStockDay"),
       measure("q2", "Latest Stock", "CurrentStockSystem"),
       measure("m", "Closing Stock On Receiving", "ClosingStockReceiving"),
-      ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon"]),
+      ...this.incidentSelect(resolved, ["receiving", "value", "score"]),
     ];
     const definitions = {
-      1: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("a", "ArticleNo", "ArticleNo"), column("a", "ArticleName", "ArticleName"), column("a", "Category3", "Category"), ...operational, measure("rank", "sorting", "Sorting")],
-      2: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("g", "Article Combo", "ArticleCombo"), ...operational, measure("rank", "sorting", "Sorting")],
-      3: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), ...operational, measure("rank", "sorting", "Sorting")],
-      4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon", "incidents", "incidentPct"])],
+      1: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("a", "ArticleNo", "ArticleNo"), column("a", "ArticleName", "ArticleName"), column("a", "Category3", "Category"), ...operational],
+      2: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), column("g", "Article Combo", "ArticleCombo"), ...operational],
+      3: [column("o", "OutletName", "OutletName"), column("o", "OutletCode", "OutletCode"), ...operational],
+      4: [column("a", "Category3", "Category"), ...common, measure("o", "Est. Closing Stock", "EstimatedClosingStock"), ...this.incidentSelect(resolved, ["receiving", "value", "score", "incidents", "incidentPct"])],
       5: [column("a", "ArticleNo", "ArticleNo"), column("r", "PO Clean", "PONumber"), column("r", "movement_type", "MovementType"), column("u", "created_by", "CreatedBy"), column("u", "document_date", "PODate"), column("r", "posting_date", "ReceivingDate"), sum("r", "qty_in_unit_of_entry", "Receiving")],
       6: [column("o", "OutletCode", "OutletCode"), column("o", "OutletName", "OutletName"), column("u", "created_by", "CreatedBy"), measure("m", "Over Receiving Incidents", "OverIncidents"), measure("m", "Over Receiving Incident%", "OverIncidentPct"), measure("m", "Under Receiving Incidents", "UnderIncidents"), measure("m", "Under Receiving Incident%", "UnderIncidentPct")],
     };
     const select = definitions[table] || definitions[1];
-    // Tables 6 and 4 are reached from the cross-division incident view, so an
-    // "All" scope is answered one business division at a time and merged.
-    if ((table === 6 || table === 4) && filters.masterCategory === "all") {
+    const run = complete ? this.runSpecsComplete.bind(this) : this.runSpecs.bind(this);
+    const incidentRows = rows => {
+      if (!modeApplies) return rows;
+      const prefix = mode === "under" ? "Under" : "Over";
+      const keys = [`${prefix}Receiving`, `${prefix}Value`, `${prefix}Score`, `${prefix}Incidents`];
+      return rows.filter(row => keys.some(key => row[key] != null && row[key] !== ""));
+    };
+
+    // The user table spans every business division. Company Goods is too wide
+    // for one DAX request, so use the complete outlet list as safe partitions.
+    if (table === 6 && filters.masterCategory === "all") {
+      const merged = [];
+      let queryTimestamp = null;
+      const fallbackCodes = [...new Set((filters.outletCodes || filters.partitionOutletCodes || []).filter(Boolean))];
+
+      for (const [categoryIndex, masterCategory] of effectiveScope.masterCategories.entries()) {
+        const baseFilters = { ...filters, masterCategory };
+        const shouldChunk = masterCategory === "COMPANY GOODS" && fallbackCodes.length > 0;
+        const partitions = shouldChunk ? chunkValues(fallbackCodes, OUTLET_QUERY_CHUNK) : [null];
+
+        try {
+          for (const [chunkIndex, outletCodes] of partitions.entries()) {
+            const queryFilters = outletCodes ? { ...baseFilters, outletCodes } : baseFilters;
+            const spec = {
+              key: `rows${categoryIndex}_${chunkIndex}`,
+              query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, queryFilters, excluded), MAX_QUERY_ROWS),
+            };
+            const result = await run([spec], { signal });
+            merged.push(...(result.decoded[spec.key] || []));
+            queryTimestamp ||= result.queryTimestamp;
+          }
+        } catch (error) {
+          if (shouldChunk || !fallbackCodes.length) throw error;
+          for (const [chunkIndex, outletCodes] of chunkValues(fallbackCodes, OUTLET_QUERY_CHUNK).entries()) {
+            const queryFilters = { ...baseFilters, outletCodes };
+            const spec = {
+              key: `fallback${categoryIndex}_${chunkIndex}`,
+              query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, queryFilters, excluded), MAX_QUERY_ROWS),
+            };
+            const result = await run([spec], { signal });
+            merged.push(...(result.decoded[spec.key] || []));
+            queryTimestamp ||= result.queryTimestamp;
+          }
+        }
+      }
+
+      return { rows: combineIncidentUserContexts(merged), range, queryTimestamp, missing, mode };
+    }
+
+    // Article and category tables can be queried one saved business division
+    // at a time and merged without asking Power BI for an oversized DAX plan.
+    if ([1, 4].includes(table) && filters.masterCategory === "all") {
       const specs = effectiveScope.masterCategories.map((masterCategory, index) => ({
         key: `rows${index}`,
-        query: createQuery(select, MANAGEMENT_FROM, commonWhere(range, effectiveScope, { ...filters, masterCategory }, excluded), MAX_QUERY_ROWS),
+        query: createQuery(
+          select,
+          MANAGEMENT_FROM,
+          table === 1
+            ? articleIncidentWhere(commonWhere(range, effectiveScope, { ...filters, masterCategory }, excluded))
+            : commonWhere(range, effectiveScope, { ...filters, masterCategory }, excluded),
+          MAX_QUERY_ROWS
+        ),
       }));
-      const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
+      const { decoded, queryTimestamp } = await this.runSpecsSequential(specs, { signal, complete });
       const merged = specs.flatMap(spec => decoded[spec.key] || []);
-      const rows = table === 6 ? combineIncidentUserContexts(merged) : combineCategoryContexts(merged);
+      const rows = incidentRows(table === 4 ? combineCategoryContexts(merged) : merged);
       return { rows, range, queryTimestamp, missing, mode };
     }
     const specs = [{ key: "rows", query: createQuery(select, MANAGEMENT_FROM, where, MAX_QUERY_ROWS) }];
-    const { decoded, queryTimestamp } = await this.runSpecs(specs, { signal });
-    return { rows: table === 6 ? combineIncidentUserContexts(decoded.rows) : decoded.rows, range, queryTimestamp, missing, mode };
+    const { decoded, queryTimestamp } = await run(specs, { signal });
+    const rows = table === 6 ? combineIncidentUserContexts(decoded.rows) : incidentRows(decoded.rows);
+    return { rows, range, queryTimestamp, missing, mode };
   }
 
   /**
@@ -1064,7 +1235,8 @@ export class PowerBIDataClient {
     const incidentMode = mode === "under" ? "under" : "over";
     if (incidentMode === "under") await this.ensureUnderMeasureSupport({ range: effectiveRange, scope: effectiveScope, signal });
 
-    const { resolved, missing } = this.resolveIncidentMeasures(incidentMode, ["receiving", "value", "score", "icon", "incidents", "incidentPct"]);
+    const { resolved, missing } = this.resolveIncidentMeasures(incidentMode, ["receiving", "value", "score", "incidents", "incidentPct"]);
+    missing.push("StatusIcon");
     const select = [
       column("o", "OutletCode", "OutletCode"),
       column("o", "OutletName", "OutletName"),
@@ -1076,7 +1248,7 @@ export class PowerBIDataClient {
       sum("s", "ActualInvoicedQuantity", "TotalSales"),
       measure("m", "STD. Stock Days", "StdStockDays"),
       measure("o", "Est. Closing Stock", "EstimatedClosingStock"),
-      ...this.incidentSelect(resolved, ["receiving", "value", "score", "icon", "incidents", "incidentPct"]),
+      ...this.incidentSelect(resolved, ["receiving", "value", "score", "incidents", "incidentPct"]),
     ];
 
     const partitions = filters.masterCategory === "all"
