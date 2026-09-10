@@ -1153,6 +1153,20 @@ function managementTableDefinition(tableNumber) {
   return managementTableDefinitionFor(tableNumber, incidentTableType(), state.detailMissingColumns);
 }
 
+function managementExportDefinition(tableNumber, mode, missingColumns = []) {
+  const definition = managementTableDefinitionFor(tableNumber, mode, missingColumns);
+  if (![1, 2, 3].includes(Number(tableNumber))) return definition;
+
+  const columns = definition.columns.filter(column => column.key !== "OutletName");
+  columns.unshift(
+    { key: "OutletCode", label: "Outlet Code" },
+    { key: "OutletName", label: "Outlet Name" },
+    { key: "Zonal", label: "Zonal" },
+    { key: "RHO", label: "RHO" }
+  );
+  return { ...definition, columns };
+}
+
 function csvColumns(table) {
   if (table === "region") return [
     { key: "Region", label: "Division", value: row => plainRegion(row) },
@@ -1301,7 +1315,7 @@ async function exportManagementWorkbook(button) {
         tableFilters.partitionOutletCodes = partitionOutletCodes;
       }
       const result = await state.client.loadManagementTable(tableFilters, tableNumber, context, { complete: true });
-      const definition = managementTableDefinitionFor(tableNumber, mode, result.missing || []);
+      const definition = managementExportDefinition(tableNumber, mode, result.missing || []);
       const rows = sortManagementWorkbookRows(
         selectedIncidentRows(normalizeManagementRows(result.rows), tableNumber, mode),
         definition
