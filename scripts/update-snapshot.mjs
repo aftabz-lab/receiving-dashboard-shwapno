@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { PowerBIDataClient } from "../powerbi.js";
 
-const SNAPSHOT_VERSION = 4;
+const SNAPSHOT_VERSION = 6;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
 const OPTION_KEYS = ["categoryOptions", "articleOptions", "outletOptions", "userOptions", "movementOptions"];
 const filters = {
@@ -21,6 +21,18 @@ const filters = {
 
 const finite = value => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const sum = (rows, field) => rows.reduce((total, row) => total + (finite(row[field]) ?? 0), 0);
+
+function hasCompleteOutletMetrics(rows) {
+  return Array.isArray(rows)
+    && rows.length > 0
+    && rows.some(row => finite(row.OverIncidents) != null && finite(row.UnderIncidents) != null);
+}
+
+function chunks(values, size = 100) {
+  const output = [];
+  for (let index = 0; index < values.length; index += size) output.push(values.slice(index, index + size));
+  return output;
+}
 
 function shiftIsoDate(value, days) {
   const date = new Date(`${value}T00:00:00Z`);
@@ -138,8 +150,20 @@ async function loadPartitionedWindow(client, baseFilters, core, { includeArticle
     categoryGroups.push(...(breakdowns.categories || []));
     regionGroups.push(...(breakdowns.regions || []));
     if (includeOutlets) {
-      const outlets = await client.load(partitionFilters, { section: "snapshotOutlets" });
-      outletGroups.push(...(outlets.snapshotOutlets || []));
+      if (masterCategory === "COMPANY GOODS") {
+        // The complete Company Goods outlet measure is too expensive as one
+        // DAX query. Discover the outlet codes with the light projection, then
+        // request the full incident/value measures in bounded partitions.
+        const light = await client.load(partitionFilters, { section: "snapshotOutlets" });
+        const outletCodes = [...new Set((light.snapshotOutlets || []).map(row => String(row.OutletCode || "").trim()).filter(Boolean))];
+        for (const outletCodesPart of chunks(outletCodes)) {
+          const outletResult = await client.load({ ...partitionFilters, outletCodes: outletCodesPart }, { section: "outlets" });
+          outletGroups.push(...(outletResult.outlets || []));
+        }
+      } else {
+        const outletResult = await client.load(partitionFilters, { section: "outlets" });
+        outletGroups.push(...(outletResult.outlets || []));
+      }
     }
     if (includeArticles) {
       const articles = await client.load(partitionFilters, { section: "articles" });
@@ -154,10 +178,58 @@ async function loadPartitionedWindow(client, baseFilters, core, { includeArticle
   };
 }
 
-async function loadKpis(client, baseFilters, reusableRows, categories, outlets) {
-  if (Array.isArray(reusableRows) && reusableRows.length) return reusableRows;
-  const result = await client.load(baseFilters, { section: "kpis" });
-  return result.kpis?.length ? result.kpis : [kpiFallback(categories, outlets)];
+async function loadKpis(client, baseFilters, reusableRows, categories, outlets, scope) {
+  if (Array.isArray(reusableRows) && reusableRows.length && finite(reusableRows[0]?.StockDay) != null) return reusableRows;
+
+  try {
+    const result = await client.load(baseFilters, { section: "kpis" });
+    if (result.kpis?.length && finite(result.kpis[0]?.StockDay) != null) return result.kpis;
+  } catch (error) {
+    console.warn(`The combined KPI query was split into safe partitions: ${error?.message || error}`);
+  }
+
+  const partitionRows = [];
+  const outletCodes = [...new Set(outlets.map(row => String(row.OutletCode || "").trim()).filter(Boolean))];
+  for (const masterCategory of scope.masterCategories) {
+    const partitionFilters = { ...baseFilters, masterCategory };
+    try {
+      const result = await client.load(partitionFilters, { section: "kpis" });
+      partitionRows.push(...(result.kpis || []));
+    } catch (error) {
+      if (!outletCodes.length) throw error;
+      console.warn(`${masterCategory} KPI query was split by outlet: ${error?.message || error}`);
+      for (const outletCodesPart of chunks(outletCodes)) {
+        const result = await client.load({ ...partitionFilters, outletCodes: outletCodesPart }, { section: "kpis" });
+        partitionRows.push(...(result.kpis || []));
+      }
+    }
+  }
+
+  if (!partitionRows.length) return [kpiFallback(categories, outlets)];
+  const combined = kpiFallback(categories, outlets);
+  combined.LatestStock = sum(partitionRows, "LatestStock");
+  const stockDayWeight = partitionRows.reduce((total, row) => {
+    const sales = finite(row.Sales);
+    const stockDay = finite(row.StockDay);
+    return total + (sales != null && stockDay != null ? sales * stockDay : 0);
+  }, 0);
+  const weightedSales = partitionRows.reduce((total, row) => {
+    const sales = finite(row.Sales);
+    return total + (sales != null && finite(row.StockDay) != null ? sales : 0);
+  }, 0);
+  combined.StockDay = weightedSales ? stockDayWeight / weightedSales : null;
+  for (const prefix of ["Over", "Under"]) {
+    const incidentField = `${prefix}Incidents`;
+    const percentField = `${prefix}IncidentPct`;
+    const population = partitionRows.reduce((total, row) => {
+      const count = finite(row[incidentField]);
+      const percent = finite(row[percentField]);
+      return total + (count != null && percent > 0 ? count / (percent / 100) : 0);
+    }, 0);
+    combined[percentField] = population ? (combined[incidentField] / population) * 100 : null;
+  }
+  combined.ActiveOutlets = outlets.length || null;
+  return [combined];
 }
 
 let previous = null;
@@ -189,7 +261,7 @@ const supporting = canReuseOptions
 const canReuseArticles = canReuseDefault
   && previous?.completeness?.articleOptionsPartitionedBy === "MasterCategory"
   && previous.articleOptions?.length;
-const canReuseOutlets = canReuseDefault && previous.outlets?.length;
+const canReuseOutlets = canReuseDefault && hasCompleteOutletMetrics(previous?.outlets);
 const defaultParts = await loadPartitionedWindow(client, filters, core, {
   includeArticles: !canReuseArticles,
   includeOutlets: !canReuseOutlets,
@@ -198,7 +270,14 @@ const outlets = canReuseOutlets ? previous.outlets : defaultParts.outlets;
 const articleOptions = canReuseArticles
   ? previous.articleOptions
   : uniqueArticles([...(supporting.articleOptions || []), ...defaultParts.articleOptions]);
-const kpis = await loadKpis(client, filters, canReuseDefault ? previous.kpis : null, defaultParts.categories, outlets);
+const kpis = await loadKpis(
+  client,
+  filters,
+  canReuseDefault && finite(previous?.kpis?.[0]?.StockDay) != null ? previous.kpis : null,
+  defaultParts.categories,
+  outlets,
+  core.scope
+);
 
 const cachedRanges = [];
 const sourceEnd = shiftIsoDate(core.scope.endExclusive, -1);
@@ -213,10 +292,17 @@ if (core.scope.start !== core.range.start || sourceEnd !== shiftIsoDate(core.ran
   const sourceCore = reusableRange?.trend?.length
     ? { ...reusableRange, scope: core.scope, sourceTimestamp: core.sourceTimestamp }
     : await client.load(sourceFilters, { section: "trend" });
-  const sourceNeedsOutlets = !reusableRange?.outlets?.length;
+  const sourceNeedsOutlets = !hasCompleteOutletMetrics(reusableRange?.outlets);
   const sourceParts = await loadPartitionedWindow(client, sourceFilters, sourceCore, { includeOutlets: sourceNeedsOutlets });
   const sourceOutlets = sourceNeedsOutlets ? sourceParts.outlets : reusableRange.outlets;
-  const sourceKpis = await loadKpis(client, sourceFilters, reusableRange?.kpis, sourceParts.categories, sourceOutlets);
+  const sourceKpis = await loadKpis(
+    client,
+    sourceFilters,
+    finite(reusableRange?.kpis?.[0]?.StockDay) != null ? reusableRange.kpis : null,
+    sourceParts.categories,
+    sourceOutlets,
+    sourceCore.scope
+  );
   cachedRanges.push({
     kpis: sourceKpis,
     trend: sourceCore.trend || [],
