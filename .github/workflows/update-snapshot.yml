@@ -2,7 +2,15 @@ name: Refresh shared Power BI snapshot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Avoid the busiest start-of-hour queue while retaining a 15-minute poll.
+    - cron: "7,22,37,52 * * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - "powerbi.js"
+      - "scripts/update-snapshot.mjs"
+      - ".github/workflows/update-snapshot.yml"
   workflow_dispatch:
 
 permissions:
