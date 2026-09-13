@@ -332,13 +332,44 @@ function restoreDashboardCache() {
 }
 
 async function fetchSharedSnapshot() {
-  const response = await fetch(SHARED_SNAPSHOT_URL, { cache: "no-store" });
+  const snapshotUrl = new URL(SHARED_SNAPSHOT_URL, location.href);
+  snapshotUrl.searchParams.set("refresh", String(Date.now()));
+  const response = await fetch(snapshotUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`Shared snapshot could not be loaded (${response.status}).`);
   const data = await response.json();
   if (!data?.ready || !Array.isArray(data.kpis) || !data.range) {
     throw new Error("The first shared snapshot has not been created yet.");
   }
   return data;
+}
+
+function revisionTime(value) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dataRevisionTime(data) {
+  return revisionTime(data?.sourceTimestamp || data?.snapshotGeneratedAt || data?.queryTimestamp);
+}
+
+function hasNewerPowerBIRevision(client, data) {
+  const liveRevision = revisionTime(client?.sourceTimestamp);
+  const savedRevision = dataRevisionTime(data);
+  if (liveRevision && (!savedRevision || liveRevision > savedRevision)) return true;
+
+  const liveEnd = String(client?.scope?.endExclusive || "");
+  const savedEnd = String(data?.scope?.endExclusive || data?.range?.endExclusive || "");
+  return Boolean(liveEnd && savedEnd && liveEnd > savedEnd);
+}
+
+function mergeOptionRows(savedRows, liveRows, key) {
+  const rows = new Map();
+  for (const row of [...(savedRows || []), ...(liveRows || [])]) {
+    const value = String(row?.[key] ?? "").trim();
+    if (!value) continue;
+    rows.set(value, { ...(rows.get(value) || {}), ...row });
+  }
+  return [...rows.values()];
 }
 
 function cacheHash(value) {
@@ -2194,15 +2225,35 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (sequence !== state.loadSequence) return;
     state.sharedSnapshot = snapshot;
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    saveDashboardCache(snapshot, { force: true });
+    const currentDataIsNewer = state.data
+      && snapshotMatchesCurrentFilters(state.data)
+      && dataRevisionTime(state.data) > dataRevisionTime(snapshot);
+    const baseSnapshot = currentDataIsNewer ? state.data : snapshot;
+    if (!currentDataIsNewer) saveDashboardCache(snapshot, { force: true });
 
-    if (snapshotMatchesCurrentFilters(snapshot)) {
-      state.data = snapshot;
-      renderAll(snapshot);
+    let liveSourceChanged = false;
+    if (refreshMetadata) {
+      state.client = new PowerBIDataClient();
+      state.detailCache.clear();
+      try {
+        await state.client.connect();
+        if (sequence !== state.loadSequence) return;
+        liveSourceChanged = hasNewerPowerBIRevision(state.client, baseSnapshot);
+      } catch (error) {
+        console.warn("Live Power BI revision check could not be completed", error);
+      }
+    }
+
+    if (snapshotMatchesCurrentFilters(baseSnapshot)) {
+      state.data = baseSnapshot;
+      renderAll(baseSnapshot);
       dom.statusDot.className = "status-dot";
       dom.connectionStatus.textContent = "Shared Power BI snapshot";
-      dom.sourceFreshness.textContent = `Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
-      return;
+      dom.sourceFreshness.textContent = `Power BI data refreshed ${dhakaDateTime(baseSnapshot.sourceTimestamp || baseSnapshot.snapshotGeneratedAt || baseSnapshot.queryTimestamp)}`;
+      if (!liveSourceChanged) return;
+      dom.statusDot.className = "status-dot is-loading";
+      dom.connectionStatus.textContent = "New Power BI data detected";
+      dom.sourceFreshness.textContent = "Updating the dashboard in the background · controls remain available";
     }
 
     const embeddedSelection = embeddedRangeSnapshot(snapshot);
@@ -2212,15 +2263,11 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
       dom.statusDot.className = "status-dot";
       dom.connectionStatus.textContent = "Shared Power BI snapshot";
       dom.sourceFreshness.textContent = `Selected date range loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
-      return;
-    }
-
-    if (refreshMetadata) {
-      state.client = new PowerBIDataClient();
-      state.detailCache.clear();
+      if (!liveSourceChanged) return;
     }
     const requestFilters = buildPowerBIFilters();
-    const cachedSelection = await readFilteredSnapshot(requestFilters, snapshot.sourceTimestamp);
+    const activeSourceTimestamp = state.client.sourceTimestamp || snapshot.sourceTimestamp;
+    const cachedSelection = await readFilteredSnapshot(requestFilters, activeSourceTimestamp);
     if (sequence !== state.loadSequence) return;
     if (cachedSelection) {
       state.data = cachedSelection;
@@ -2250,9 +2297,10 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (sequence !== state.loadSequence) return;
     if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
     state.backgroundStatusTimer = 0;
-    state.data = coreWithSnapshotOptions(data, snapshot);
+    state.data = coreWithSnapshotOptions(data, baseSnapshot);
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
     renderAll(state.data);
+    saveDashboardCache(state.data);
     dom.statusDot.className = "status-dot";
     dom.connectionStatus.textContent = "Live Power BI data";
     dom.sourceFreshness.textContent = `Overview ready · loading outlet and search data…`;
@@ -2260,9 +2308,18 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     try {
       const supporting = await state.client.load(requestFilters, { section: "supporting", signal: controller.signal });
       if (sequence !== state.loadSequence) return;
-      state.data = { ...state.data, ...supporting };
+      state.data = {
+        ...state.data,
+        ...supporting,
+        categoryOptions: mergeOptionRows(baseSnapshot.categoryOptions, supporting.categoryOptions, "Category"),
+        articleOptions: mergeOptionRows(baseSnapshot.articleOptions, supporting.articleOptions, "ArticleNo"),
+        outletOptions: mergeOptionRows(baseSnapshot.outletOptions, supporting.outletOptions, "OutletCode"),
+        userOptions: mergeOptionRows(baseSnapshot.userOptions, supporting.userOptions, "UserCode"),
+        movementOptions: mergeOptionRows(baseSnapshot.movementOptions, supporting.movementOptions, "MovementCode"),
+      };
       renderAll(state.data);
-      await writeFilteredSnapshot(requestFilters, snapshot.sourceTimestamp, state.data);
+      saveDashboardCache(state.data);
+      await writeFilteredSnapshot(requestFilters, activeSourceTimestamp, state.data);
       dom.sourceFreshness.textContent = `Model refreshed ${dhakaDateTime(state.data.sourceTimestamp)}`;
     } catch (error) {
       if (sequence !== state.loadSequence || error?.name === "AbortError") return;
