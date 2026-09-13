@@ -334,13 +334,24 @@ function restoreDashboardCache() {
 async function fetchSharedSnapshot() {
   const snapshotUrl = new URL(SHARED_SNAPSHOT_URL, location.href);
   snapshotUrl.searchParams.set("refresh", String(Date.now()));
-  const response = await fetch(snapshotUrl, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Shared snapshot could not be loaded (${response.status}).`);
-  const data = await response.json();
-  if (!data?.ready || !Array.isArray(data.kpis) || !data.range) {
-    throw new Error("The first shared snapshot has not been created yet.");
+  const attempts = [snapshotUrl, new URL(SHARED_SNAPSHOT_URL, location.href)];
+  let lastError = null;
+
+  for (const url of attempts) {
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Shared snapshot could not be loaded (${response.status}).`);
+      const data = await response.json();
+      if (!data?.ready || !Array.isArray(data.kpis) || !data.range) {
+        throw new Error("The shared snapshot is incomplete.");
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return data;
+
+  throw lastError || new Error("The shared snapshot could not be loaded.");
 }
 
 function revisionTime(value) {
@@ -2329,11 +2340,18 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
   } catch (error) {
     if (sequence !== state.loadSequence || error?.name === "AbortError") return;
     console.error("Dashboard refresh failed", error);
+    state.nextRefreshAt = Date.now() + 60_000;
     if (state.data) {
       clearError();
-      dom.statusDot.className = "status-dot is-error";
-      dom.connectionStatus.textContent = "Last saved snapshot";
-      dom.sourceFreshness.textContent = "Exact live selection unavailable · the latest working snapshot remains visible";
+      if (filtersAreDefault()) {
+        dom.statusDot.className = "status-dot";
+        dom.connectionStatus.textContent = "Shared Power BI snapshot";
+        dom.sourceFreshness.textContent = `Power BI data refreshed ${dhakaDateTime(state.data.sourceTimestamp || state.data.snapshotGeneratedAt || state.data.queryTimestamp)} · checking again shortly`;
+      } else {
+        dom.statusDot.className = "status-dot is-error";
+        dom.connectionStatus.textContent = "Last saved snapshot";
+        dom.sourceFreshness.textContent = "Selected filters could not refresh · retrying automatically";
+      }
     } else {
       showError(error);
     }
