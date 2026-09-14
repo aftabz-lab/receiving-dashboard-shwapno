@@ -34,6 +34,25 @@ function chunks(values, size = 100) {
   return output;
 }
 
+async function loadInOutletPartitions(client, baseFilters, outletCodes, section, label) {
+  const results = [];
+
+  async function loadPart(codes) {
+    try {
+      results.push(await client.load({ ...baseFilters, outletCodes: codes }, { section }));
+    } catch (error) {
+      if (codes.length <= 1) throw error;
+      const middle = Math.ceil(codes.length / 2);
+      console.warn(`${label} partition with ${codes.length} outlets failed; retrying smaller partitions.`);
+      await loadPart(codes.slice(0, middle));
+      await loadPart(codes.slice(middle));
+    }
+  }
+
+  for (const outletCodesPart of chunks(outletCodes)) await loadPart(outletCodesPart);
+  return results;
+}
+
 function shiftIsoDate(value, days) {
   const date = new Date(`${value}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -146,18 +165,44 @@ async function loadPartitionedWindow(client, baseFilters, core, { includeArticle
   for (const masterCategory of core.scope.masterCategories) {
     console.log(`Loading ${masterCategory} breakdown for ${core.range.start} to ${shiftIsoDate(core.range.endExclusive, -1)}.`);
     const partitionFilters = { ...baseFilters, masterCategory };
-    const breakdowns = await client.load(partitionFilters, { section: "snapshotBreakdowns" });
-    categoryGroups.push(...(breakdowns.categories || []));
-    regionGroups.push(...(breakdowns.regions || []));
+    let light = null;
+    let breakdownResults;
+    try {
+      breakdownResults = [await client.load(partitionFilters, { section: "snapshotBreakdowns" })];
+    } catch (error) {
+      // Inventory is not additive across date partitions. Outlet partitions
+      // preserve the requested date window while reducing DAX query pressure.
+      console.warn(`${masterCategory} breakdown query was split by outlet: ${error?.message || error}`);
+      light = await client.load(partitionFilters, { section: "snapshotOutlets" });
+      const outletCodes = [...new Set((light.snapshotOutlets || []).map(row => String(row.OutletCode || "").trim()).filter(Boolean))];
+      if (!outletCodes.length) throw error;
+      breakdownResults = await loadInOutletPartitions(
+        client,
+        partitionFilters,
+        outletCodes,
+        "snapshotBreakdowns",
+        `${masterCategory} breakdown`
+      );
+    }
+    for (const breakdowns of breakdownResults) {
+      categoryGroups.push(...(breakdowns.categories || []));
+      regionGroups.push(...(breakdowns.regions || []));
+    }
     if (includeOutlets) {
       if (masterCategory === "COMPANY GOODS") {
         // The complete Company Goods outlet measure is too expensive as one
         // DAX query. Discover the outlet codes with the light projection, then
         // request the full incident/value measures in bounded partitions.
-        const light = await client.load(partitionFilters, { section: "snapshotOutlets" });
+        light ||= await client.load(partitionFilters, { section: "snapshotOutlets" });
         const outletCodes = [...new Set((light.snapshotOutlets || []).map(row => String(row.OutletCode || "").trim()).filter(Boolean))];
-        for (const outletCodesPart of chunks(outletCodes)) {
-          const outletResult = await client.load({ ...partitionFilters, outletCodes: outletCodesPart }, { section: "outlets" });
+        const outletResults = await loadInOutletPartitions(
+          client,
+          partitionFilters,
+          outletCodes,
+          "outlets",
+          `${masterCategory} outlet`
+        );
+        for (const outletResult of outletResults) {
           outletGroups.push(...(outletResult.outlets || []));
         }
       } else {
