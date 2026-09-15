@@ -83,15 +83,21 @@ function shiftIsoDate(date, days) {
   return value.toISOString().slice(0, 10);
 }
 
-function dhakaToday() {
+function dhakaDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Dhaka",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(date);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function dhakaToday() {
+  return dhakaDate();
 }
 
 function collectLiterals(node, output = []) {
@@ -167,6 +173,25 @@ function savedReportScope(explorationDocument) {
   } catch {
     return fallback;
   }
+}
+
+function scopeThroughRefreshDate(scope, sourceTimestamp) {
+  const refreshDate = dhakaDate(sourceTimestamp);
+  if (!refreshDate || !scope?.start || !scope?.endExclusive) return scope;
+
+  const endExclusive = shiftIsoDate(refreshDate, 1);
+  if (endExclusive <= scope.endExclusive) return scope;
+
+  const shiftDays = Math.round(
+    (Date.parse(`${endExclusive}T00:00:00Z`) - Date.parse(`${scope.endExclusive}T00:00:00Z`)) / 86_400_000
+  );
+  if (!Number.isFinite(shiftDays) || shiftDays <= 0) return scope;
+
+  return {
+    ...scope,
+    start: shiftIsoDate(scope.start, shiftDays),
+    endExclusive,
+  };
 }
 
 function isMasked(mask, index) {
@@ -654,6 +679,7 @@ export class PowerBIDataClient {
     this.measureIndex = buildMeasureIndex(this.model);
     const refresh = this.model.LastRefreshTime || payload.package?.LastRefreshTime || null;
     this.sourceTimestamp = refresh && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(refresh) ? `${refresh}Z` : refresh;
+    this.scope = scopeThroughRefreshDate(this.scope, this.sourceTimestamp);
     return this;
   }
 
