@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { PowerBIDataClient } from "../powerbi.js";
+import { PowerBIDataClient, POWER_BI_URL } from "../powerbi.js";
 
 const SNAPSHOT_VERSION = 9;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
@@ -19,8 +19,37 @@ const filters = {
   movementCode: "all",
 };
 
+const STATUS_PATH = new URL("../snapshot-status.json", import.meta.url);
+// FORCE_SNAPSHOT=1 rebuilds even when Power BI reports no change. Use it after
+// the published report link is replaced.
+const FORCE = /^(1|true|yes|force)$/i.test(String(process.env.FORCE_SNAPSHOT || "").trim());
+// MAX_SNAPSHOT_AGE_HOURS rebuilds a snapshot that has simply grown old, even
+// when the Power BI refresh timestamp has not moved. Blank or 0 disables it.
+const MAX_AGE_HOURS = Number(String(process.env.MAX_SNAPSHOT_AGE_HOURS || "").trim());
+
 const finite = value => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const sum = (rows, field) => rows.reduce((total, row) => total + (finite(row[field]) ?? 0), 0);
+
+async function writeStatus(patch) {
+  let existing = {};
+  try {
+    existing = JSON.parse(await readFile(STATUS_PATH, "utf8"));
+  } catch {}
+  const status = { ...existing, lastCheckedAt: new Date().toISOString(), ...patch };
+  try {
+    await writeFile(STATUS_PATH, `${JSON.stringify(status, null, 2)}\n`);
+  } catch (error) {
+    console.warn(`The heartbeat file could not be written: ${error?.message || error}`);
+  }
+  return status;
+}
+
+function snapshotIsStale(snapshot) {
+  if (!Number.isFinite(MAX_AGE_HOURS) || MAX_AGE_HOURS <= 0) return false;
+  const generated = Date.parse(snapshot?.snapshotGeneratedAt || "");
+  if (!Number.isFinite(generated)) return true;
+  return Date.now() - generated >= MAX_AGE_HOURS * 3_600_000;
+}
 
 function hasCompleteOutletMetrics(rows) {
   return Array.isArray(rows)
@@ -291,7 +320,10 @@ filters.dateFrom = client.scope.start;
 filters.dateTo = shiftIsoDate(client.scope.endExclusive, -1);
 filters.days = Math.max(1, Math.round((Date.parse(`${client.scope.endExclusive}T00:00:00Z`) - Date.parse(`${client.scope.start}T00:00:00Z`)) / 86_400_000));
 const core = await client.load(filters, { section: "trend" });
-const canReuseDefault = sameWindow(previous, core);
+const stale = snapshotIsStale(previous);
+if (FORCE) console.log("FORCE_SNAPSHOT is set; rebuilding regardless of the Power BI refresh timestamp.");
+if (stale && !FORCE) console.log(`The saved snapshot is older than ${MAX_AGE_HOURS} hours; rebuilding it.`);
+const canReuseDefault = !FORCE && !stale && sameWindow(previous, core);
 if (
   canReuseDefault
   && previous?.ready
@@ -303,6 +335,13 @@ if (
   && Array.isArray(previous.cachedRanges)
 ) {
   console.log(`Power BI has not changed since ${previous.snapshotGeneratedAt}; keeping the existing snapshot.`);
+  await writeStatus({
+    result: "unchanged",
+    powerBiRefreshedAt: core.sourceTimestamp || null,
+    reportWindow: previous.range ? `${previous.range.start} to ${shiftIsoDate(previous.range.endExclusive, -1)}` : null,
+    snapshotGeneratedAt: previous.snapshotGeneratedAt || null,
+    reportLink: POWER_BI_URL,
+  });
   process.exit(0);
 }
 
@@ -410,8 +449,18 @@ for (const key of ["kpis", "trend", "categories", "regions", "outlets", "categor
 if (!snapshot.kpis.length || !snapshot.range || !snapshot.trend.length || !snapshot.categories.length || !snapshot.regions.length || !snapshot.outlets.length) {
   throw new Error("Power BI returned an incomplete snapshot; the previous snapshot was preserved.");
 }
-if (!snapshot.articleOptions.some(row => String(row.ArticleNo) === "2402081")) {
-  throw new Error("Required F081 article 2402081 is missing; the previous snapshot was preserved.");
+// The F081 article is a truncation canary, not a business rule. Failing on its
+// absence alone froze the snapshot whenever the article had no movement inside
+// the report window. Fail only when the article list also shrank, which is what
+// a genuinely truncated partition looks like.
+const REQUIRED_ARTICLE = "2402081";
+const hasRequiredArticle = snapshot.articleOptions.some(row => String(row.ArticleNo) === REQUIRED_ARTICLE);
+const previousArticleCount = Array.isArray(previous?.articleOptions) ? previous.articleOptions.length : 0;
+if (!hasRequiredArticle && previousArticleCount && snapshot.articleOptions.length < previousArticleCount * 0.9) {
+  throw new Error(`Article options look truncated (${snapshot.articleOptions.length} rows against ${previousArticleCount}) and article ${REQUIRED_ARTICLE} is missing; the previous snapshot was preserved.`);
+}
+if (!hasRequiredArticle) {
+  console.warn(`Article ${REQUIRED_ARTICLE} has no rows in the current report window; the snapshot was published because the article list is complete (${snapshot.articleOptions.length} rows).`);
 }
 for (const range of snapshot.cachedRanges) {
   if (!range.kpis.length || !range.trend.length || !range.categories.length || !range.regions.length || !range.outlets.length) {
@@ -423,4 +472,18 @@ const temporaryPath = new URL("../snapshot.next.json", import.meta.url);
 const destinationPath = new URL("../snapshot.json", import.meta.url);
 await writeFile(temporaryPath, JSON.stringify(snapshot));
 await rename(temporaryPath, destinationPath);
+await writeStatus({
+  result: "updated",
+  powerBiRefreshedAt: snapshot.sourceTimestamp || null,
+  reportWindow: snapshot.range ? `${snapshot.range.start} to ${shiftIsoDate(snapshot.range.endExclusive, -1)}` : null,
+  snapshotGeneratedAt: snapshot.snapshotGeneratedAt,
+  lastChangeAt: snapshot.snapshotGeneratedAt,
+  rows: {
+    articleOptions: articleOptions.length,
+    categories: snapshot.categories.length,
+    outlets: snapshot.outlets.length,
+    trendDays: snapshot.trend.length,
+  },
+  reportLink: POWER_BI_URL,
+});
 console.log(`Snapshot v${SNAPSHOT_VERSION} created at ${snapshot.snapshotGeneratedAt} with ${articleOptions.length} article options and ${snapshot.categories.length} categories.`);
