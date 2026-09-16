@@ -1,21 +1,32 @@
-name: Refresh snapshot
+name: Refresh snapshot (manual)
+
+# Run this from the Actions tab after the Power BI report link is replaced, or
+# any time the dashboard must be rebuilt immediately. It shares a concurrency
+# lock with the hourly workflow, so the two can never race the same commit.
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even when Power BI reports no change"
+        type: boolean
+        default: true
+      embed_url:
+        description: "Optional Power BI publish-to-web link to use for this run only"
+        type: string
+        required: false
 
 permissions:
   contents: write
 
 concurrency:
-  # Share the lock with the scheduled snapshot workflow so a manual refresh
-  # cannot race its snapshot.json commit.
   group: receiving-dashboard-snapshot
   cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
 
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +36,70 @@ jobs:
           node-version: 20
 
       - name: Read Power BI and build partitioned snapshot
-        run: node scripts/update-snapshot.mjs
-
-      - name: Publish snapshot when changed
+        env:
+          FORCE_SNAPSHOT: ${{ inputs.force && '1' || '' }}
+          MAX_SNAPSHOT_AGE_HOURS: "0"
+          PBI_EMBED_URL: ${{ inputs.embed_url || vars.PBI_EMBED_URL }}
+          PBI_API_ROOT: ${{ vars.PBI_API_ROOT }}
         run: |
-          if git diff --quiet -- snapshot.json; then
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "::group::Snapshot attempt ${attempt}"
+            if timeout 30m node scripts/update-snapshot.mjs; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "Attempt ${attempt} did not complete."
+            if [ "${attempt}" -lt 3 ]; then sleep $((attempt * 90)); fi
+          done
+          echo "::error::Power BI could not be read after three attempts; snapshot.json was left untouched."
+          exit 1
+
+      - name: Publish snapshot
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add snapshot.json
+          [ -f snapshot-status.json ] && git add snapshot-status.json
+
+          if git diff --cached --quiet; then
             echo "Snapshot content is unchanged."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add snapshot.json
-          git commit -m "Refresh receiving dashboard snapshot"
-          git push
+
+          if git diff --cached --quiet -- snapshot.json; then
+            git commit -m "Snapshot heartbeat: manual run"
+          else
+            git commit -m "Refresh receiving dashboard snapshot"
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Published on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Push rejected; rebasing onto the latest main (attempt ${attempt})."
+            git fetch origin main || true
+            if ! git rebase -X theirs origin/main; then
+              git rebase --abort || true
+              echo "::error::The snapshot commit could not be rebased onto main."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::snapshot.json was rebuilt but could not be pushed."
+          exit 1
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "### Manual snapshot run"
+            echo ""
+            echo '```json'
+            cat snapshot-status.json 2>/dev/null || echo '{ "result": "no heartbeat written" }'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

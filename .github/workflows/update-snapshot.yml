@@ -2,8 +2,12 @@ name: Refresh shared Power BI snapshot
 
 on:
   schedule:
-    # Avoid the busiest start-of-hour queue while retaining a 15-minute poll.
-    - cron: "7,22,37,52 * * * *"
+    # Hourly snapshot check. GitHub can delay or silently drop a scheduled tick
+    # under load, so a catch-up tick runs 30 minutes later. When Power BI has
+    # published nothing new the run finishes in seconds and writes only the
+    # heartbeat, so the second tick costs almost nothing.
+    - cron: "5 * * * *"
+    - cron: "35 * * * *"
   push:
     branches:
       - main
@@ -12,6 +16,11 @@ on:
       - "scripts/update-snapshot.mjs"
       - ".github/workflows/update-snapshot.yml"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even when Power BI reports no change (use after the report link is replaced)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -20,25 +29,124 @@ concurrency:
   group: receiving-dashboard-snapshot
   cancel-in-progress: false
 
+env:
+  # Rebuild a snapshot older than this many hours even when the Power BI refresh
+  # timestamp has not moved. Set to "1" for a full rebuild every hour; set to
+  # "0" to rebuild only when Power BI actually changes.
+  MAX_SNAPSHOT_AGE_HOURS: "6"
+  # Commit snapshot-status.json on every run so the repository shows an hourly
+  # heartbeat. Set to "false" to commit only when snapshot.json itself changes.
+  COMMIT_HEARTBEAT: "true"
+
 jobs:
   refresh-snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
       - name: Read Power BI and build partitioned snapshot
-        run: node scripts/update-snapshot.mjs
-      - name: Publish snapshot when changed
+        env:
+          FORCE_SNAPSHOT: ${{ inputs.force && '1' || '' }}
+          # Optional repository variables. Leave them unset to keep the link and
+          # cluster that are compiled into powerbi.js.
+          PBI_EMBED_URL: ${{ vars.PBI_EMBED_URL }}
+          PBI_API_ROOT: ${{ vars.PBI_API_ROOT }}
         run: |
-          if git diff --quiet -- snapshot.json; then
-            echo "Snapshot content is unchanged."
-            exit 0
-          fi
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "::group::Snapshot attempt ${attempt}"
+            if timeout 30m node scripts/update-snapshot.mjs; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "Attempt ${attempt} did not complete."
+            if [ "${attempt}" -lt 3 ]; then sleep $((attempt * 90)); fi
+          done
+          echo "::error::Power BI could not be read after three attempts; snapshot.json was left untouched."
+          exit 1
+
+      - name: Publish snapshot
+        run: |
+          set -uo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add snapshot.json
-          git commit -m "Refresh receiving dashboard snapshot"
-          git push
+          if [ "${COMMIT_HEARTBEAT}" = "true" ] && [ -f snapshot-status.json ]; then
+            git add snapshot-status.json
+          fi
+
+          if git diff --cached --quiet; then
+            echo "Nothing to publish."
+            exit 0
+          fi
+
+          if git diff --cached --quiet -- snapshot.json; then
+            git commit -m "Snapshot heartbeat: Power BI unchanged"
+          else
+            git commit -m "Refresh receiving dashboard snapshot"
+          fi
+
+          # A manual upload landing between checkout and push used to fail the
+          # whole run and lose the snapshot. Rebase onto main and try again.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Published on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Push rejected; rebasing onto the latest main (attempt ${attempt})."
+            git fetch origin main || true
+            # During a rebase "theirs" is the commit being replayed, so this keeps
+            # the snapshot just built and every other file as it is on main.
+            if ! git rebase -X theirs origin/main; then
+              git rebase --abort || true
+              echo "::error::The snapshot commit could not be rebased onto main."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::snapshot.json was rebuilt but could not be pushed."
+          exit 1
+
+      - name: Record a failed run in the heartbeat
+        if: failure()
+        continue-on-error: true
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git rebase --abort || true
+          node -e "
+            const fs = require('fs');
+            let status = {};
+            try { status = JSON.parse(fs.readFileSync('snapshot-status.json', 'utf8')); } catch {}
+            status.lastCheckedAt = new Date().toISOString();
+            status.result = 'failed';
+            status.lastFailureAt = status.lastCheckedAt;
+            status.lastFailureRun = process.env.RUN_URL || null;
+            fs.writeFileSync('snapshot-status.json', JSON.stringify(status, null, 2) + '\n');
+          "
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add snapshot-status.json
+          git diff --cached --quiet || git commit -m "Snapshot heartbeat: run failed"
+          git fetch origin main || true
+          git rebase -X theirs origin/main || git rebase --abort || true
+          git push || true
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "### Snapshot run"
+            echo ""
+            echo '```json'
+            cat snapshot-status.json 2>/dev/null || echo '{ "result": "no heartbeat written" }'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
