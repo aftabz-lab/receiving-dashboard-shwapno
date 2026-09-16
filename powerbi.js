@@ -1,7 +1,42 @@
-const API_ROOT = "https://wabi-east-asia-b-primary-api.analysis.windows.net";
-const RESOURCE_KEY = "09822098-d3f2-462b-bf91-1703f0e5e9cc";
+const DEFAULT_API_ROOT = "https://wabi-east-asia-b-primary-api.analysis.windows.net";
+const DEFAULT_RESOURCE_KEY = "09822098-d3f2-462b-bf91-1703f0e5e9cc";
+const DEFAULT_POWER_BI_URL = "https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D";
 
-export const POWER_BI_URL = "https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D";
+/**
+ * The published report link can be replaced without editing this file:
+ *   - GitHub Actions: repository variable PBI_EMBED_URL (and PBI_API_ROOT)
+ *   - Browser: set globalThis.__PBI_EMBED_URL__ before app.js loads
+ * Anything missing or unreadable falls back to the constants above, so with no
+ * override present the client behaves exactly as before.
+ */
+function readSourceOverride(name) {
+  try {
+    if (typeof process !== "undefined" && process?.env?.[name]) return String(process.env[name]).trim();
+  } catch {}
+  try {
+    const value = globalThis?.[`__${name}__`];
+    if (value) return String(value).trim();
+  } catch {}
+  return null;
+}
+
+function resourceKeyFromUrl(url) {
+  try {
+    const token = new URL(url).searchParams.get("r");
+    if (!token) return null;
+    const json = typeof atob === "function"
+      ? atob(token.replace(/-/g, "+").replace(/_/g, "/"))
+      : Buffer.from(token, "base64").toString("utf8");
+    const key = JSON.parse(json)?.k;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(key || "")) ? String(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+export const POWER_BI_URL = readSourceOverride("PBI_EMBED_URL") || DEFAULT_POWER_BI_URL;
+const RESOURCE_KEY = resourceKeyFromUrl(POWER_BI_URL) || DEFAULT_RESOURCE_KEY;
+const API_ROOT = readSourceOverride("PBI_API_ROOT") || DEFAULT_API_ROOT;
 
 const DEFAULT_MOVEMENT_TYPES = ["101", "102", "303", "304", "305", "551", "552", "Z04", "122", "161", "162", "Z03"];
 const DEFAULT_MASTER_CATEGORIES = [
