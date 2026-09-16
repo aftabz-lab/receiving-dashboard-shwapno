@@ -1,10 +1,10 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260910-8";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260916-1";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
-const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v5";
+const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v6";
 const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v4";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
 const DETAIL_ROW_LIMIT = Number.POSITIVE_INFINITY;
@@ -38,6 +38,7 @@ const state = {
   sharedSnapshot: null,
   data: null,
   filters: { ...DEFAULT_FILTERS },
+  reportDefaultDates: true,
   activeView: "overview",
   exceptionFocus: "over",
   incidentMode: "over",
@@ -271,6 +272,13 @@ function syncDateInputs(data) {
   dom.periodFilter.value = state.filters.dateFrom && state.filters.dateTo ? "custom" : String(state.filters.days);
 }
 
+function applyReportDefaultDateRange(data) {
+  if (!state.reportDefaultDates || !data?.range?.start || !data?.range?.endExclusive) return;
+  state.filters.dateFrom = data.range.start;
+  state.filters.dateTo = inclusiveEndIso(data.range);
+  state.filters.days = Number(data.range.days) || state.filters.days;
+}
+
 function dateTick(value) {
   const date = toDate(value);
   return date ? new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).format(date) : "";
@@ -305,7 +313,13 @@ function uniqueSorted(values) {
 }
 
 function filtersAreDefault() {
-  return Object.entries(DEFAULT_FILTERS).every(([key, value]) => state.filters[key] === value);
+  const nonDateKeys = Object.keys(DEFAULT_FILTERS).filter(key => !["days", "dateFrom", "dateTo"].includes(key));
+  return nonDateKeys.every(key => state.filters[key] === DEFAULT_FILTERS[key])
+    && (state.reportDefaultDates || (
+      state.filters.days === DEFAULT_FILTERS.days
+      && state.filters.dateFrom === DEFAULT_FILTERS.dateFrom
+      && state.filters.dateTo === DEFAULT_FILTERS.dateTo
+    ));
 }
 
 function saveDashboardCache(data, { force = false } = {}) {
@@ -319,6 +333,7 @@ function restoreDashboardCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || "null");
     if (!cached?.data || !cached.savedAt) return false;
+    applyReportDefaultDateRange(cached.data);
     state.sharedSnapshot = cached.data;
     state.data = cached.data;
     renderAll(state.data);
@@ -2235,6 +2250,7 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     const [snapshot] = await Promise.all([snapshotPromise, organizationPromise]);
     if (sequence !== state.loadSequence) return;
     state.sharedSnapshot = snapshot;
+    applyReportDefaultDateRange(snapshot);
     state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
     const currentDataIsNewer = state.data
       && snapshotMatchesCurrentFilters(state.data)
@@ -2430,6 +2446,7 @@ function applyCustomDateRange() {
   const changed = state.filters.dateFrom !== dateFrom || state.filters.dateTo !== dateTo;
   state.filters.dateFrom = dateFrom;
   state.filters.dateTo = dateTo;
+  state.reportDefaultDates = false;
   dom.periodFilter.value = "custom";
   dom.cascadeNote.textContent = `Custom date range ${dateFrom} to ${dateTo} selected · loading the latest snapshot first.`;
   if (changed) loadDashboard();
@@ -2736,6 +2753,7 @@ dom.periodFilter.addEventListener("change", event => {
   state.filters.days = Number(event.target.value);
   state.filters.dateFrom = null;
   state.filters.dateTo = null;
+  state.reportDefaultDates = false;
   dom.fromDateFilter.removeAttribute("aria-invalid");
   dom.toDateFilter.removeAttribute("aria-invalid");
   loadDashboard();
@@ -2833,13 +2851,15 @@ dom.resetButton.addEventListener("click", () => {
     dateApplyTimer = 0;
   }
   state.filters = { ...DEFAULT_FILTERS };
+  state.reportDefaultDates = true;
+  applyReportDefaultDateRange(state.sharedSnapshot);
   state.incidentMode = "over";
   state.exceptionFocus = "over";
   state.underValue = { key: "", status: "idle", kind: "value", kpi: null, categories: new Map(), regions: new Map() };
   if (["OverValue", "UnderValue"].includes(state.sorts.region.key)) state.sorts.region = { key: "OverValue", direction: "desc" };
   applyIncidentModeVisibility();
   applyModeToRegionHeader();
-  dom.periodFilter.value = "30";
+  dom.periodFilter.value = "custom";
   dom.fromDateFilter.removeAttribute("aria-invalid");
   dom.toDateFilter.removeAttribute("aria-invalid");
   dom.masterCategoryFilter.value = "all";

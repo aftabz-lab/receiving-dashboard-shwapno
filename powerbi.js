@@ -479,6 +479,14 @@ const KPI_SELECT = [
   measure("o", "Outlets with Latest Stock > 0", "ActiveOutlets"),
 ];
 
+// Incident counts and rates are non-additive measures. Keep a lightweight,
+// dedicated query so snapshot generation never rebuilds the Power BI card by
+// summing category or outlet partitions.
+const INCIDENT_KPI_SELECT = [
+  measure("m", "Over Receiving Incidents", "OverIncidents"),
+  measure("m", "Over Receiving Incident%", "OverIncidentPct"),
+];
+
 function composeKpiContexts(rows, fallback = {}) {
   const numeric = value => value == null || value === "" ? null : (Number.isFinite(Number(value)) ? Number(value) : null);
   const sumPresent = fieldName => {
@@ -955,10 +963,15 @@ export class PowerBIDataClient {
         sum("r", "qty_in_unit_of_entry", "Receiving"),
       ], from, where, MAX_QUERY_ROWS),
     };
+    const incidentKpiSpec = {
+      key: "kpis",
+      query: createQuery(INCIDENT_KPI_SELECT, from, where, 50),
+    };
     const sections = {
       core: specs.slice(0, 4),
       supporting: specs.slice(4),
       kpis: [specs[0]],
+      incidentKpis: [incidentKpiSpec],
       trend: [specs[1]],
       outlets: [specs[4]],
       articles: [specs[6]],
