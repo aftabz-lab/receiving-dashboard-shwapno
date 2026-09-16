@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { PowerBIDataClient } from "../powerbi.js";
 
-const SNAPSHOT_VERSION = 7;
+const SNAPSHOT_VERSION = 8;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
 const OPTION_KEYS = ["categoryOptions", "articleOptions", "outletOptions", "userOptions", "movementOptions"];
 const filters = {
@@ -224,29 +224,11 @@ async function loadPartitionedWindow(client, baseFilters, core, { includeArticle
 }
 
 async function loadKpis(client, baseFilters, reusableRows, categories, outlets, scope) {
-  const withExactIncidentMeasures = async rows => {
-    const incidentFilters = baseFilters.masterCategory === "all"
-      ? { ...baseFilters, masterCategory: scope.masterCategory }
-      : baseFilters;
-    const result = await client.load(incidentFilters, { section: "incidentKpis" });
-    const exact = result.kpis?.[0];
-    if (finite(exact?.OverIncidents) == null) {
-      throw new Error("Power BI did not return the exact over-receiving incident measure; the previous snapshot was preserved.");
-    }
-    return [{
-      ...(rows?.[0] || {}),
-      OverIncidents: finite(exact.OverIncidents),
-      OverIncidentPct: finite(exact.OverIncidentPct),
-    }];
-  };
-
-  if (Array.isArray(reusableRows) && reusableRows.length && finite(reusableRows[0]?.StockDay) != null) {
-    return withExactIncidentMeasures(reusableRows);
-  }
+  if (Array.isArray(reusableRows) && reusableRows.length && finite(reusableRows[0]?.StockDay) != null) return reusableRows;
 
   try {
     const result = await client.load(baseFilters, { section: "kpis" });
-    if (result.kpis?.length && finite(result.kpis[0]?.StockDay) != null) return withExactIncidentMeasures(result.kpis);
+    if (result.kpis?.length && finite(result.kpis[0]?.StockDay) != null) return result.kpis;
   } catch (error) {
     console.warn(`The combined KPI query was split into safe partitions: ${error?.message || error}`);
   }
@@ -268,7 +250,7 @@ async function loadKpis(client, baseFilters, reusableRows, categories, outlets, 
     }
   }
 
-  if (!partitionRows.length) return withExactIncidentMeasures([kpiFallback(categories, outlets)]);
+  if (!partitionRows.length) return [kpiFallback(categories, outlets)];
   const combined = kpiFallback(categories, outlets);
   combined.LatestStock = sum(partitionRows, "LatestStock");
   const stockDayWeight = partitionRows.reduce((total, row) => {
@@ -292,7 +274,7 @@ async function loadKpis(client, baseFilters, reusableRows, categories, outlets, 
     combined[percentField] = population ? (combined[incidentField] / population) * 100 : null;
   }
   combined.ActiveOutlets = outlets.length || null;
-  return withExactIncidentMeasures([combined]);
+  return [combined];
 }
 
 let previous = null;
