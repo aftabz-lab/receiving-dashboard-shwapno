@@ -1891,3 +1891,108 @@ html[data-theme="dark"] .detail-table .column-filter-row th { background-color: 
 html[data-theme="dark"] .column-search { border-color: #4a5f9e; background: #0d1e2c; color: var(--ink); }
 html[data-theme="dark"] .detail-table td[data-column-key="UnderReceiving"] { background: #1b2b45; color: #9dc0ff; }
 html[data-theme="dark"] .detail-table td[data-column-key="UnderValue"] { color: #a8c4ff; }
+
+/* Outlet table sort options ------------------------------------------------ */
+
+.sort-control { position: relative; display: inline-flex; }
+
+.sort-control-trigger::after {
+  content: " ▾";
+  font-size: 10px;
+}
+
+.sort-control-trigger[aria-expanded="true"] {
+  background: #dceff0;
+  border-color: var(--petrol);
+}
+
+.sort-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 296px;
+  max-width: calc(100vw - 32px);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 18px 40px rgba(12, 32, 48, .18);
+  text-align: left;
+}
+
+.sort-panel[hidden] { display: none; }
+
+.sort-level {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.sort-level span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sort-panel select {
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background-color: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sort-panel select:disabled { opacity: .5; cursor: not-allowed; }
+
+.sort-direction {
+  min-width: 38px;
+  min-height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: white;
+  color: var(--petrol);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.sort-direction:hover:not(:disabled) { border-color: var(--petrol); }
+.sort-direction:disabled { opacity: .4; cursor: not-allowed; }
+
+.sort-panel-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+html[data-theme="dark"] .sort-panel {
+  border-color: #2a4459;
+  background: #0d1e2c;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .45);
+}
+
+html[data-theme="dark"] .sort-panel select,
+html[data-theme="dark"] .sort-direction {
+  border-color: #2a4459;
+  background: #0d1e2c;
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .sort-control-trigger[aria-expanded="true"] { background: #1b4650; }
+
+@media (max-width: 760px) {
+  .sort-panel { right: auto; left: 0; }
+}

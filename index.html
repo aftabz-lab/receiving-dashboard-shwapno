@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260910-8">
+  <link rel="stylesheet" href="./styles.css?v=20260916-2">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -34,7 +34,7 @@
         <svg class="theme-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/></svg>
         <span id="theme-label">Dark mode</span>
       </button>
-      <button id="refresh-dashboard" class="icon-button compact-action" type="button" title="Refresh dashboard data">
+      <button id="refresh-dashboard" class="icon-button compact-action" type="button" title="Check Power BI for a newer snapshot and reload the dashboard">
         <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M6.1 9A7 7 0 0 1 18 6.8L20 11M4 13l2 4.2A7 7 0 0 0 17.9 15"/></svg>
         <span>Refresh</span>
       </button>
@@ -160,7 +160,7 @@
       <section id="exception-summary" class="exception-summary" aria-label="Top outlet exceptions"></section>
 
       <article class="panel outlet-panel">
-        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Click any number for article-level details; select any header to sort.</p></div><div class="table-head-meta"><span id="outlet-sort-status" class="sort-status">Sorted by over value ↓</span><span id="outlet-result-count" class="result-count">—</span><button id="show-all-outlets" class="csv-button" type="button" aria-pressed="false" hidden>Show all outlets</button><button class="csv-button" type="button" data-export-table="outlet" disabled>Visible CSV</button></div></header>
+        <header class="panel-header table-panel-header"><div><h2 id="outlet-table-title">Top over-receiving outlets</h2><p id="outlet-table-note">Click any number for article-level details; select any header to sort.</p></div><div class="table-head-meta"><span id="outlet-sort-status" class="sort-status">Sorted by over value ↓</span><span id="outlet-result-count" class="result-count">—</span><span class="sort-control" id="outlet-sort-control"><button id="outlet-sort-open" class="csv-button sort-control-trigger" type="button" aria-expanded="false" aria-haspopup="true" title="Choose the sort column and add up to three sort levels">Sort options</button><div id="outlet-sort-panel" class="sort-panel" role="dialog" aria-label="Outlet table sort options" hidden></div></span><button id="show-all-outlets" class="csv-button" type="button" aria-pressed="false" hidden>Show all outlets</button><button class="csv-button" type="button" data-export-table="outlet" disabled>Visible CSV</button></div></header>
         <div class="table-scroll wide-table">
           <table class="executive-table outlet-table sortable-table">
             <thead><tr>
@@ -221,6 +221,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260916-1"></script>
+  <script type="module" src="./app.js?v=20260916-2"></script>
 </body>
 </html>

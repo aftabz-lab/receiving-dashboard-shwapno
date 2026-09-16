@@ -80,6 +80,8 @@ const state = {
   loadSequence: 0,
   loadController: null,
   backgroundStatusTimer: 0,
+  manualRefreshBusy: false,
+  manualRefreshNoticeTimer: 0,
   detailSequence: 0,
   nextRefreshAt: 0,
   visibleRows: { region: [], outlet: [], detail: [] },
@@ -1545,12 +1547,120 @@ function updateSortIndicators(table) {
   });
   const status = el(`${table}-sort-status`);
   if (status) status.textContent = `Sorted by ${criteria.map(item => `${sortLabelFor(item.key)} ${item.direction === "asc" ? "↑" : "↓"}`).join(", then ")}`;
+  if (table === "outlet") syncSortPanel();
 }
 
 function sortLabelFor(key) {
   // The under exposure column changes name with the measure behind it.
   if (key === "UnderValue") return exposureLabel({ short: true }).toLocaleLowerCase();
   return sortLabels[key] || key;
+}
+
+// ---------------------------------------------------------------------------
+// Outlet table sort options
+//
+// Header clicks (and Shift-click for extra levels) still work exactly as
+// before. This panel exposes the same sort engine as dropdowns so the columns
+// can be chosen from a list and up to three sort levels can be set without a
+// keyboard.
+// ---------------------------------------------------------------------------
+const SORT_LEVELS = 3;
+
+function sortCriteriaFor(table) {
+  const sort = state.sorts[table];
+  return [{ key: sort.key, direction: sort.direction }, ...(sort.secondary || [])];
+}
+
+function outletSortColumns() {
+  return [...document.querySelectorAll('[data-sort-table="outlet"][data-sort-key]')]
+    .map(button => ({ key: button.dataset.sortKey, label: button.textContent.replace(/\s+/g, " ").trim() }))
+    .filter(column => column.key && column.label);
+}
+
+function buildSortPanel() {
+  const panel = el("outlet-sort-panel");
+  if (!panel || panel.dataset.ready === "true") return;
+  const columns = outletSortColumns();
+  if (!columns.length) return;
+
+  const levels = Array.from({ length: SORT_LEVELS }, (_, index) => {
+    const options = [
+      ...(index ? ['<option value="">Not used</option>'] : []),
+      ...columns.map(column => `<option value="${escapeHtml(column.key)}">${escapeHtml(column.label)}</option>`),
+    ].join("");
+    return `<div class="sort-level">
+      <span>${index ? "Then by" : "Sort by"}</span>
+      <select data-sort-level="${index}" aria-label="${index ? `Sort level ${index + 1} column` : "Primary sort column"}">${options}</select>
+      <button class="sort-direction" type="button" data-sort-direction="${index}" data-direction="desc" title="Switch between highest first and lowest first">↓</button>
+    </div>`;
+  }).join("");
+
+  panel.innerHTML = `${levels}<div class="sort-panel-actions"><button class="csv-button" type="button" data-sort-reset>Reset</button><button class="csv-button" type="button" data-sort-close>Done</button></div>`;
+  panel.dataset.ready = "true";
+
+  panel.querySelectorAll("[data-sort-level]").forEach(select => {
+    select.addEventListener("change", applySortPanel);
+  });
+  panel.querySelectorAll("[data-sort-direction]").forEach(button => {
+    button.addEventListener("click", () => {
+      button.dataset.direction = button.dataset.direction === "asc" ? "desc" : "asc";
+      button.textContent = button.dataset.direction === "asc" ? "↑" : "↓";
+      applySortPanel();
+    });
+  });
+  panel.querySelector("[data-sort-reset]")?.addEventListener("click", () => {
+    state.sorts.outlet = { key: focusConfig[state.exceptionFocus].field, direction: "desc" };
+    renderOutlets();
+  });
+  panel.querySelector("[data-sort-close]")?.addEventListener("click", () => toggleSortPanel(false));
+}
+
+function applySortPanel() {
+  const panel = el("outlet-sort-panel");
+  if (!panel || panel.dataset.ready !== "true") return;
+  const criteria = [];
+  panel.querySelectorAll("[data-sort-level]").forEach(select => {
+    const key = select.value;
+    // A column used higher up the list wins; the duplicate level is dropped and
+    // the panel re-syncs, so the same column can never be sorted twice.
+    if (!key || criteria.some(item => item.key === key)) return;
+    const direction = panel.querySelector(`[data-sort-direction="${select.dataset.sortLevel}"]`)?.dataset.direction;
+    criteria.push({ key, direction: direction === "asc" ? "asc" : "desc" });
+  });
+  if (!criteria.length) return;
+  state.sorts.outlet = { key: criteria[0].key, direction: criteria[0].direction, secondary: criteria.slice(1) };
+  renderOutlets();
+}
+
+function syncSortPanel() {
+  const panel = el("outlet-sort-panel");
+  if (!panel || panel.dataset.ready !== "true") return;
+  const criteria = sortCriteriaFor("outlet");
+  panel.querySelectorAll("[data-sort-level]").forEach(select => {
+    const index = Number(select.dataset.sortLevel);
+    const criterion = criteria[index] || null;
+    select.value = criterion ? criterion.key : "";
+    // A level can only be filled once the level above it is in use.
+    select.disabled = index > 0 && !criteria[index - 1];
+    const directionButton = panel.querySelector(`[data-sort-direction="${index}"]`);
+    if (!directionButton) return;
+    const direction = criterion?.direction === "asc" ? "asc" : "desc";
+    directionButton.dataset.direction = direction;
+    directionButton.textContent = direction === "asc" ? "↑" : "↓";
+    directionButton.disabled = !criterion;
+    directionButton.setAttribute("aria-label", `${direction === "asc" ? "Lowest first" : "Highest first"} for sort level ${index + 1}`);
+  });
+}
+
+function toggleSortPanel(open) {
+  const panel = el("outlet-sort-panel");
+  const trigger = el("outlet-sort-open");
+  if (!panel || !trigger) return;
+  buildSortPanel();
+  const next = typeof open === "boolean" ? open : panel.hidden;
+  panel.hidden = !next;
+  trigger.setAttribute("aria-expanded", String(next));
+  if (next) syncSortPanel();
 }
 
 function drillText(display, metric, contextType, contextValue, contextLabel, extraClass = "") {
@@ -2622,6 +2732,23 @@ document.querySelectorAll(".sort-button").forEach(button => {
   button.addEventListener("click", event => applySort(button.dataset.sortTable, button.dataset.sortKey, event.shiftKey));
 });
 
+el("outlet-sort-open")?.addEventListener("click", event => {
+  event.stopPropagation();
+  toggleSortPanel();
+});
+
+document.addEventListener("click", event => {
+  const control = el("outlet-sort-control");
+  if (!control || control.contains(event.target)) return;
+  toggleSortPanel(false);
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  const panel = el("outlet-sort-panel");
+  if (panel && !panel.hidden) toggleSortPanel(false);
+});
+
 document.querySelectorAll("[data-export-table]").forEach(button => {
   button.addEventListener("click", () => {
     // The user-incident table exports both its own rows and the category rows
@@ -2886,7 +3013,39 @@ dom.filterToggle.addEventListener("click", () => {
 });
 
 dom.themeButton.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
-dom.refreshButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true }));
+// The shared snapshot usually has not moved between two clicks, so without its
+// own busy state and closing message the button looked like it did nothing.
+async function manualRefresh() {
+  if (state.manualRefreshBusy) return;
+  state.manualRefreshBusy = true;
+  const before = dataRevisionTime(state.sharedSnapshot);
+  dom.refreshButton.disabled = true;
+  dom.refreshButton.classList.add("is-refreshing");
+  dom.statusDot.className = "status-dot is-loading";
+  dom.connectionStatus.textContent = "Checking Power BI";
+  dom.sourceFreshness.textContent = "Looking for a newer shared snapshot…";
+  try {
+    await loadDashboard({ refreshMetadata: true });
+    if (navigator.onLine && state.sharedSnapshot && dataRevisionTime(state.sharedSnapshot) <= before) {
+      const checkedAt = dhakaDateTime(new Date().toISOString());
+      const settled = dom.sourceFreshness.textContent;
+      dom.connectionStatus.textContent = "Shared Power BI snapshot";
+      dom.sourceFreshness.textContent = `Already up to date · checked ${checkedAt}`;
+      window.clearTimeout(state.manualRefreshNoticeTimer);
+      state.manualRefreshNoticeTimer = window.setTimeout(() => {
+        if (dom.sourceFreshness.textContent.startsWith("Already up to date")) dom.sourceFreshness.textContent = settled;
+      }, 6000);
+    }
+  } catch (error) {
+    console.warn("Manual refresh could not be completed", error);
+  } finally {
+    state.manualRefreshBusy = false;
+    dom.refreshButton.disabled = false;
+    dom.refreshButton.classList.remove("is-refreshing");
+  }
+}
+
+dom.refreshButton.addEventListener("click", manualRefresh);
 dom.retryButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true }));
 el("detail-close").addEventListener("click", () => {
   window.clearTimeout(state.detailSearchTimer);
