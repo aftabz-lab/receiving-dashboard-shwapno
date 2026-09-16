@@ -43,6 +43,7 @@ const state = {
   exceptionFocus: "over",
   incidentMode: "over",
   outletSearch: "",
+  outletColumnFilters: {},
   showAllOutlets: false,
   rhoSuggestions: [],
   zonalSuggestions: [],
@@ -1748,14 +1749,84 @@ const focusConfig = {
   stock: { field: "StockDay", title: "Highest stock-cover outlets", description: "Outlets ranked by the source-calculated stock-day measure.", value: row => finite(row.StockDay) == null ? "—" : `${Number(row.StockDay).toFixed(1)} days` },
 };
 
-function filteredRankedOutlets() {
+// ---------------------------------------------------------------------------
+// Outlet table column dropdowns
+//
+// Each selectable column carries its own dropdown in the header. Selections
+// narrow the rows already on screen; they never re-query Power BI, so the table
+// answers instantly. The option lists cascade: every list is built from the
+// rows that pass the other columns' selections.
+// ---------------------------------------------------------------------------
+const OUTLET_COLUMN_FILTERS = [
+  { key: "Outlet", all: "All outlets", value: row => String(row.OutletCode ?? "").trim(), text: row => outletChoiceLabel(row) },
+  { key: "Region", all: "All divisions", value: row => plainRegion(row), text: row => plainRegion(row) },
+  { key: "RHO", all: "All RHOs", value: row => String(row.RHO ?? "").trim(), text: row => String(row.RHO ?? "").trim() },
+  { key: "Zonal", all: "All Zonals", value: row => String(row.Zonal ?? "").trim(), text: row => String(row.Zonal ?? "").trim() },
+];
+
+function outletChoiceLabel(row) {
+  const code = String(row.OutletCode ?? "").trim();
+  const name = plainOutlet(row);
+  // Most outlet names already begin with the code, so only add it when missing.
+  return !code || name.toLocaleUpperCase().startsWith(code.toLocaleUpperCase()) ? name : `${code} — ${name}`;
+}
+
+function outletColumnMatches(row, skipKey = null) {
+  return OUTLET_COLUMN_FILTERS.every(column => {
+    if (column.key === skipKey) return true;
+    const selected = state.outletColumnFilters[column.key];
+    if (!selected) return true;
+    return String(column.value(row) ?? "") === selected;
+  });
+}
+
+function activeOutletColumnFilters() {
+  return OUTLET_COLUMN_FILTERS.filter(column => state.outletColumnFilters[column.key]);
+}
+
+function renderOutletColumnFilters(baseRows) {
+  for (const column of OUTLET_COLUMN_FILTERS) {
+    const select = document.querySelector(`[data-outlet-filter="${column.key}"]`);
+    if (!select) continue;
+    const selected = state.outletColumnFilters[column.key] || "";
+    const options = new Map();
+    for (const row of baseRows) {
+      if (!outletColumnMatches(row, column.key)) continue;
+      const value = String(column.value(row) ?? "").trim();
+      if (!value || options.has(value)) continue;
+      options.set(value, String(column.text(row) ?? value).trim() || value);
+    }
+    // A selection stays listed even when the other columns exclude it, so the
+    // dropdown never silently drops what the reader chose.
+    if (selected && !options.has(selected)) options.set(selected, selected);
+    const sorted = [...options.entries()]
+      .sort((left, right) => left[1].localeCompare(right[1], undefined, { numeric: true, sensitivity: "base" }));
+    select.innerHTML = `<option value="">${escapeHtml(column.all)}</option>${sorted
+      .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`)
+      .join("")}`;
+    select.value = selected;
+    select.classList.toggle("is-active", Boolean(selected));
+  }
+}
+
+function positionOutletColumnFilters() {
+  const row = document.querySelector(".outlet-filter-row");
+  if (!row) return;
+  const offset = row.previousElementSibling?.offsetHeight || 0;
+  row.querySelectorAll("th").forEach(cell => { cell.style.top = `${offset}px`; });
+}
+
+function outletBaseRows() {
   const config = focusConfig[state.exceptionFocus];
   const query = state.outletSearch.trim().toLocaleLowerCase();
-  const filtered = state.data.enrichedOutlets
+  return state.data.enrichedOutlets
     .filter(row => row.OutletCode && (finite(row[config.field]) ?? 0) > 0)
     .filter(row => !query || [plainOutlet(row), row.OutletCode, plainRegion(row), row.RHO, row.Zonal, row.Area, row.Format]
       .some(value => String(value ?? "").toLocaleLowerCase().includes(query)));
-  return sortRows(filtered, "outlet");
+}
+
+function filteredRankedOutlets() {
+  return sortRows(outletBaseRows().filter(row => outletColumnMatches(row)), "outlet");
 }
 
 function renderExceptionSummary(rows) {
@@ -1769,7 +1840,10 @@ function renderExceptionSummary(rows) {
 function renderOutlets() {
   if (!state.data) return;
   const config = focusConfig[state.exceptionFocus];
-  const rows = filteredRankedOutlets();
+  const baseRows = outletBaseRows();
+  renderOutletColumnFilters(baseRows);
+  window.requestAnimationFrame(positionOutletColumnFilters);
+  const rows = sortRows(baseRows.filter(row => outletColumnMatches(row)), "outlet");
   const visibleRows = state.showAllOutlets ? rows : rows.slice(0, OUTLET_PREVIEW_LIMIT);
   const visible = visibleRows.map((row, index) => ({ ...row, __rank: index + 1 }));
   state.visibleRows.outlet = visible;
@@ -2783,6 +2857,7 @@ dom.detailTableGrid.addEventListener("keydown", event => {
 
 window.addEventListener("resize", () => {
   if (dom.detailDialog.open) positionColumnFilters();
+  positionOutletColumnFilters();
 });
 
 dom.main.addEventListener("click", event => {
@@ -2856,6 +2931,14 @@ dom.managementSignals.addEventListener("click", event => {
 });
 
 dom.outletSearch.addEventListener("input", event => { state.outletSearch = event.target.value; renderOutlets(); });
+
+document.querySelectorAll("[data-outlet-filter]").forEach(select => {
+  select.addEventListener("change", () => {
+    state.outletColumnFilters[select.dataset.outletFilter] = select.value;
+    state.showAllOutlets = false;
+    renderOutlets();
+  });
+});
 dom.showAllOutletsButton.addEventListener("click", () => {
   state.showAllOutlets = !state.showAllOutlets;
   renderOutlets();
@@ -3002,7 +3085,9 @@ dom.resetButton.addEventListener("click", () => {
   dom.incidentFilter.value = "over";
   dom.outletSearch.value = "";
   state.outletSearch = "";
+  state.outletColumnFilters = {};
   state.showAllOutlets = false;
+  if (state.data) renderOutlets();
   loadDashboard();
 });
 

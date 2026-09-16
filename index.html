@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260916-2">
+  <link rel="stylesheet" href="./styles.css?v=20260916-3">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -176,6 +176,20 @@
               <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="OverValue">Over value <span></span></button></th>
               <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="OverIncidents">Over incidents <span></span></button></th>
               <th scope="col" class="numeric"><button class="sort-button" type="button" data-sort-table="outlet" data-sort-key="UnderIncidents">Under incidents <span></span></button></th>
+            </tr>
+            <tr class="column-filter-row outlet-filter-row">
+              <th></th>
+              <th><select class="column-select" data-outlet-filter="Outlet" aria-label="Select an outlet"><option value="">All outlets</option></select></th>
+              <th><select class="column-select" data-outlet-filter="Region" aria-label="Select a division"><option value="">All divisions</option></select></th>
+              <th><select class="column-select" data-outlet-filter="RHO" aria-label="Select an RHO"><option value="">All RHOs</option></select></th>
+              <th><select class="column-select" data-outlet-filter="Zonal" aria-label="Select a Zonal"><option value="">All Zonals</option></select></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
+              <th class="numeric"></th>
             </tr></thead>
             <tbody id="outlet-table-body"><tr><td colspan="12" class="empty-cell">Loading outlet exceptions…</td></tr></tbody>
           </table>
@@ -221,6 +235,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260916-2"></script>
+  <script type="module" src="./app.js?v=20260916-3"></script>
 </body>
 </html>
