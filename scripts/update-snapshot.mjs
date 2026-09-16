@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { PowerBIDataClient } from "../powerbi.js";
 
-const SNAPSHOT_VERSION = 8;
+const SNAPSHOT_VERSION = 9;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
 const OPTION_KEYS = ["categoryOptions", "articleOptions", "outletOptions", "userOptions", "movementOptions"];
 const filters = {
@@ -307,6 +307,10 @@ if (
 }
 
 const canReuseOptions = canReuseDefault && OPTION_KEYS.every(key => Array.isArray(previous?.[key]) && previous[key].length);
+// A snapshot-version bump can represent a calculation change even when the
+// Power BI source timestamp is unchanged. Never carry KPI rows across that
+// boundary; rebuild them from the current category partitions.
+const canReuseKpis = canReuseDefault && previous?.snapshotVersion >= SNAPSHOT_VERSION;
 const supporting = canReuseOptions
   ? Object.fromEntries(OPTION_KEYS.map(key => [key, previous[key]]))
   : await client.load(filters, { section: "options" });
@@ -325,7 +329,7 @@ const articleOptions = canReuseArticles
 const kpis = await loadKpis(
   client,
   filters,
-  canReuseDefault && finite(previous?.kpis?.[0]?.StockDay) != null ? previous.kpis : null,
+  canReuseKpis && finite(previous?.kpis?.[0]?.StockDay) != null ? previous.kpis : null,
   defaultParts.categories,
   outlets,
   core.scope
@@ -350,7 +354,7 @@ if (core.scope.start !== core.range.start || sourceEnd !== shiftIsoDate(core.ran
   const sourceKpis = await loadKpis(
     client,
     sourceFilters,
-    finite(reusableRange?.kpis?.[0]?.StockDay) != null ? reusableRange.kpis : null,
+    canReuseKpis && finite(reusableRange?.kpis?.[0]?.StockDay) != null ? reusableRange.kpis : null,
     sourceParts.categories,
     sourceOutlets,
     sourceCore.scope
