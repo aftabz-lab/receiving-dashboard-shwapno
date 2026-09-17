@@ -2,12 +2,10 @@ name: Refresh shared Power BI snapshot
 
 on:
   schedule:
-    # Hourly snapshot check. GitHub can delay or silently drop a scheduled tick
-    # under load, so a catch-up tick runs 30 minutes later. When Power BI has
-    # published nothing new the run finishes in seconds and writes only the
-    # heartbeat, so the second tick costs almost nothing.
-    - cron: "5 * * * *"
-    - cron: "35 * * * *"
+    # Poll at GitHub Actions' shortest supported interval. The updater compares
+    # both the Power BI refresh timestamp and a content fingerprint, then exits
+    # quickly when the published report has not changed.
+    - cron: "2-59/5 * * * *"
   push:
     branches:
       - main
@@ -33,10 +31,10 @@ env:
   # Rebuild a snapshot older than this many hours even when the Power BI refresh
   # timestamp has not moved. Set to "1" for a full rebuild every hour; set to
   # "0" to rebuild only when Power BI actually changes.
-  MAX_SNAPSHOT_AGE_HOURS: "6"
-  # Commit snapshot-status.json on every run so the repository shows an hourly
-  # heartbeat. Set to "false" to commit only when snapshot.json itself changes.
-  COMMIT_HEARTBEAT: "true"
+  MAX_SNAPSHOT_AGE_HOURS: "1"
+  # Do not create a Pages deployment every five minutes when nothing changed.
+  # snapshot-status.json is always committed together with a changed snapshot.
+  COMMIT_HEARTBEAT: "false"
 
 jobs:
   refresh-snapshot:
@@ -78,8 +76,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add snapshot.json
-          if [ "${COMMIT_HEARTBEAT}" = "true" ] && [ -f snapshot-status.json ]; then
+          if ! git diff --quiet -- snapshot.json; then
+            git add snapshot.json
+            if [ -f snapshot-status.json ]; then git add snapshot-status.json; fi
+          elif [ "${COMMIT_HEARTBEAT}" = "true" ] && [ -f snapshot-status.json ]; then
             git add snapshot-status.json
           fi
 
