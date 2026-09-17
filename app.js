@@ -2,11 +2,12 @@ import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260916-1";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
-const AUTO_REFRESH_MS = 15 * 60 * 1000;
+const SNAPSHOT_CHECK_MS = 60 * 1000;
 const DETAIL_CACHE_MS = 5 * 60 * 1000;
 const DASHBOARD_CACHE_KEY = "receiving-dashboard-shared-snapshot-v6";
 const FILTER_CACHE_NAME = "receiving-dashboard-filter-snapshots-v4";
 const SHARED_SNAPSHOT_URL = "./snapshot.json";
+const SHARED_SNAPSHOT_STATUS_URL = "./snapshot-status.json";
 const DETAIL_ROW_LIMIT = Number.POSITIVE_INFINITY;
 const DATALIST_RENDER_LIMIT = 250;
 const OUTLET_PREVIEW_LIMIT = 50;
@@ -378,12 +379,45 @@ function revisionTime(value) {
 }
 
 function dataRevisionTime(data) {
-  return revisionTime(data?.sourceTimestamp || data?.snapshotGeneratedAt || data?.queryTimestamp);
+  // A content-based snapshot can be rebuilt while Power BI's published
+  // LastRefreshTime remains unchanged, so the capture time is authoritative.
+  return revisionTime(data?.snapshotGeneratedAt || data?.sourceTimestamp || data?.queryTimestamp);
+}
+
+async function fetchSharedSnapshotStatus() {
+  const statusUrl = new URL(SHARED_SNAPSHOT_STATUS_URL, location.href);
+  statusUrl.searchParams.set("refresh", String(Date.now()));
+  const response = await fetch(statusUrl, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Snapshot status could not be loaded (${response.status}).`);
+  return response.json();
+}
+
+function snapshotStatusIsNewer(status, snapshot) {
+  const statusFingerprint = String(status?.sourceFingerprint || "");
+  const snapshotFingerprint = String(snapshot?.sourceFingerprint || "");
+  if (statusFingerprint && statusFingerprint !== snapshotFingerprint) return true;
+  return revisionTime(status?.snapshotGeneratedAt || status?.lastChangeAt) > dataRevisionTime(snapshot);
+}
+
+async function pollSharedSnapshot({ force = false } = {}) {
+  if (!navigator.onLine || document.hidden) return false;
+  if (!force && state.nextRefreshAt && Date.now() < state.nextRefreshAt) return false;
+  state.nextRefreshAt = Date.now() + SNAPSHOT_CHECK_MS;
+  try {
+    const status = await fetchSharedSnapshotStatus();
+    if (!state.sharedSnapshot || snapshotStatusIsNewer(status, state.sharedSnapshot)) {
+      await loadDashboard({ refreshMetadata: true, snapshotOnly: true });
+      return true;
+    }
+  } catch (error) {
+    console.warn("Shared snapshot status could not be checked", error);
+  }
+  return false;
 }
 
 function hasNewerPowerBIRevision(client, data) {
   const liveRevision = revisionTime(client?.sourceTimestamp);
-  const savedRevision = dataRevisionTime(data);
+  const savedRevision = revisionTime(data?.sourceTimestamp || data?.queryTimestamp);
   if (liveRevision && (!savedRevision || liveRevision > savedRevision)) return true;
 
   const liveEnd = String(client?.scope?.endExclusive || "");
@@ -2404,7 +2438,7 @@ function handleDetailSearchInput(value, immediate = false) {
   else state.detailSearchTimer = window.setTimeout(() => runDetailSourceSearch(candidate), 450);
 }
 
-async function loadDashboard({ refreshMetadata = false } = {}) {
+async function loadDashboard({ refreshMetadata = false, snapshotOnly = false } = {}) {
   const sequence = ++state.loadSequence;
   if (state.loadController) state.loadController.abort();
   state.loadController = null;
@@ -2435,7 +2469,7 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (sequence !== state.loadSequence) return;
     state.sharedSnapshot = snapshot;
     applyReportDefaultDateRange(snapshot);
-    state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+    state.nextRefreshAt = Date.now() + SNAPSHOT_CHECK_MS;
     const currentDataIsNewer = state.data
       && snapshotMatchesCurrentFilters(state.data)
       && dataRevisionTime(state.data) > dataRevisionTime(snapshot);
@@ -2443,9 +2477,9 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (!currentDataIsNewer) saveDashboardCache(snapshot, { force: true });
 
     let liveSourceChanged = false;
-    if (refreshMetadata) {
+    if (refreshMetadata) state.detailCache.clear();
+    if (refreshMetadata && !snapshotOnly) {
       state.client = new PowerBIDataClient();
-      state.detailCache.clear();
       try {
         await state.client.connect();
         if (sequence !== state.loadSequence) return;
@@ -2475,6 +2509,16 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
       dom.connectionStatus.textContent = "Shared Power BI snapshot";
       dom.sourceFreshness.textContent = `Selected date range loaded instantly · Power BI data refreshed ${dhakaDateTime(snapshot.sourceTimestamp || snapshot.snapshotGeneratedAt || snapshot.queryTimestamp)}`;
       if (!liveSourceChanged) return;
+    }
+    if (snapshotOnly) {
+      if (!state.data) {
+        state.data = baseSnapshot;
+        renderAll(baseSnapshot);
+      }
+      dom.statusDot.className = "status-dot";
+      dom.connectionStatus.textContent = "Shared Power BI snapshot";
+      dom.sourceFreshness.textContent = `Latest saved snapshot checked ${dhakaDateTime(snapshot.snapshotGeneratedAt || snapshot.sourceTimestamp || snapshot.queryTimestamp)} · current selected view retained`;
+      return;
     }
     const requestFilters = buildPowerBIFilters();
     const activeSourceTimestamp = state.client.sourceTimestamp || snapshot.sourceTimestamp;
@@ -2509,7 +2553,7 @@ async function loadDashboard({ refreshMetadata = false } = {}) {
     if (state.backgroundStatusTimer) window.clearTimeout(state.backgroundStatusTimer);
     state.backgroundStatusTimer = 0;
     state.data = coreWithSnapshotOptions(data, baseSnapshot);
-    state.nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
+    state.nextRefreshAt = Date.now() + SNAPSHOT_CHECK_MS;
     renderAll(state.data);
     saveDashboardCache(state.data);
     dom.statusDot.className = "status-dot";
@@ -3107,10 +3151,10 @@ async function manualRefresh() {
   dom.refreshButton.disabled = true;
   dom.refreshButton.classList.add("is-refreshing");
   dom.statusDot.className = "status-dot is-loading";
-  dom.connectionStatus.textContent = "Checking Power BI";
+  dom.connectionStatus.textContent = "Checking saved snapshot";
   dom.sourceFreshness.textContent = "Looking for a newer shared snapshot…";
   try {
-    await loadDashboard({ refreshMetadata: true });
+    await loadDashboard({ refreshMetadata: true, snapshotOnly: true });
     if (navigator.onLine && state.sharedSnapshot && dataRevisionTime(state.sharedSnapshot) <= before) {
       const checkedAt = dhakaDateTime(new Date().toISOString());
       const settled = dom.sourceFreshness.textContent;
@@ -3131,7 +3175,7 @@ async function manualRefresh() {
 }
 
 dom.refreshButton.addEventListener("click", manualRefresh);
-dom.retryButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true }));
+dom.retryButton.addEventListener("click", () => loadDashboard({ refreshMetadata: true, snapshotOnly: true }));
 el("detail-close").addEventListener("click", () => {
   window.clearTimeout(state.detailSearchTimer);
   dom.detailDialog.close();
@@ -3142,14 +3186,17 @@ window.addEventListener("offline", () => {
   dom.connectionStatus.textContent = "Device is offline";
   dom.sourceFreshness.textContent = state.data ? "Showing the last successfully loaded view" : "Waiting for a connection";
 });
-window.addEventListener("online", () => loadDashboard({ refreshMetadata: true }));
+window.addEventListener("online", () => {
+  if (state.data) pollSharedSnapshot({ force: true });
+  else loadDashboard({ refreshMetadata: true, snapshotOnly: true });
+});
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && state.nextRefreshAt && Date.now() >= state.nextRefreshAt) loadDashboard({ refreshMetadata: true });
+  if (!document.hidden && state.nextRefreshAt && Date.now() >= state.nextRefreshAt) pollSharedSnapshot({ force: true });
 });
 window.setInterval(() => {
-  if (!document.hidden && navigator.onLine && state.nextRefreshAt && Date.now() >= state.nextRefreshAt) loadDashboard({ refreshMetadata: true });
+  if (!document.hidden && navigator.onLine) pollSharedSnapshot();
 }, 60_000);
 
 setTheme(document.documentElement.dataset.theme);
 restoreDashboardCache();
-export const dashboardReady = loadDashboard({ refreshMetadata: true });
+export const dashboardReady = loadDashboard({ refreshMetadata: true, snapshotOnly: true });
