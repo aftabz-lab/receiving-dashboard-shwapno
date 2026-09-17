@@ -1,7 +1,8 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { PowerBIDataClient, POWER_BI_URL } from "../powerbi.js";
 
-const SNAPSHOT_VERSION = 9;
+const SNAPSHOT_VERSION = 10;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
 const OPTION_KEYS = ["categoryOptions", "articleOptions", "outletOptions", "userOptions", "movementOptions"];
 const filters = {
@@ -88,10 +89,37 @@ function shiftIsoDate(value, days) {
   return date.toISOString().slice(0, 10);
 }
 
-function sameWindow(left, right) {
+function canonicalize(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(canonicalize)
+      .sort((left, right) => String(JSON.stringify(left)).localeCompare(String(JSON.stringify(right))));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])]));
+  }
+  return typeof value === "number" && Object.is(value, -0) ? 0 : value;
+}
+
+// LastRefreshTime is not reliable for every publish-to-web refresh. This
+// lightweight fingerprint also detects changed daily totals, a replaced report
+// link and changed report slicer dates without running the fragile full query.
+function fingerprintSource(data) {
+  const payload = canonicalize({
+    reportLink: POWER_BI_URL,
+    range: data?.range || null,
+    scope: data?.scope || null,
+    trend: data?.trend || [],
+  });
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function sameWindow(left, right, sourceFingerprint) {
   return Boolean(
-    left?.sourceTimestamp
-    && left.sourceTimestamp === right?.sourceTimestamp
+    left?.sourceFingerprint
+    && left.sourceFingerprint === sourceFingerprint
+    && left.sourceReport === POWER_BI_URL
+    && String(left.sourceTimestamp || "") === String(right?.sourceTimestamp || "")
     && left.range?.start === right?.range?.start
     && left.range?.endExclusive === right?.range?.endExclusive
   );
@@ -319,11 +347,14 @@ await client.connect();
 filters.dateFrom = client.scope.start;
 filters.dateTo = shiftIsoDate(client.scope.endExclusive, -1);
 filters.days = Math.max(1, Math.round((Date.parse(`${client.scope.endExclusive}T00:00:00Z`) - Date.parse(`${client.scope.start}T00:00:00Z`)) / 86_400_000));
+// Keep the five-minute probe small and reliable while Power BI is publishing.
+// A complete rebuild still runs at least hourly and after every detected change.
 const core = await client.load(filters, { section: "trend" });
+const sourceFingerprint = fingerprintSource(core);
 const stale = snapshotIsStale(previous);
 if (FORCE) console.log("FORCE_SNAPSHOT is set; rebuilding regardless of the Power BI refresh timestamp.");
 if (stale && !FORCE) console.log(`The saved snapshot is older than ${MAX_AGE_HOURS} hours; rebuilding it.`);
-const canReuseDefault = !FORCE && !stale && sameWindow(previous, core);
+const canReuseDefault = !FORCE && !stale && sameWindow(previous, core, sourceFingerprint);
 if (
   canReuseDefault
   && previous?.ready
@@ -340,6 +371,7 @@ if (
     powerBiRefreshedAt: core.sourceTimestamp || null,
     reportWindow: previous.range ? `${previous.range.start} to ${shiftIsoDate(previous.range.endExclusive, -1)}` : null,
     snapshotGeneratedAt: previous.snapshotGeneratedAt || null,
+    sourceFingerprint,
     reportLink: POWER_BI_URL,
   });
   process.exit(0);
@@ -379,11 +411,11 @@ const sourceEnd = shiftIsoDate(core.scope.endExclusive, -1);
 if (core.scope.start !== core.range.start || sourceEnd !== shiftIsoDate(core.range.endExclusive, -1)) {
   const sourceFilters = { ...filters, dateFrom: core.scope.start, dateTo: sourceEnd };
   console.log(`Building fast cached range ${sourceFilters.dateFrom} to ${sourceFilters.dateTo}.`);
-  const reusableRange = previous?.cachedRanges?.find(item => (
+  const reusableRange = canReuseDefault ? previous?.cachedRanges?.find(item => (
     item?.sourceTimestamp === core.sourceTimestamp
     && item.range?.start === sourceFilters.dateFrom
     && item.range?.endExclusive === shiftIsoDate(sourceFilters.dateTo, 1)
-  ));
+  )) : null;
   const sourceCore = reusableRange?.trend?.length
     ? { ...reusableRange, scope: core.scope, sourceTimestamp: core.sourceTimestamp }
     : await client.load(sourceFilters, { section: "trend" });
@@ -408,6 +440,7 @@ if (core.scope.start !== core.range.start || sourceEnd !== shiftIsoDate(core.ran
     scope: sourceCore.scope,
     sourceTimestamp: sourceCore.sourceTimestamp,
     queryTimestamp: sourceCore.queryTimestamp,
+    sourceFingerprint: sourceCore.sourceFingerprint || fingerprintSource(sourceCore),
   });
 }
 
@@ -429,6 +462,8 @@ const snapshot = {
   cachedRanges,
   ready: true,
   snapshotVersion: SNAPSHOT_VERSION,
+  sourceReport: POWER_BI_URL,
+  sourceFingerprint,
   snapshotGeneratedAt: new Date().toISOString(),
   completeness: {
     queryBlockMaximumRows: 30000,
@@ -477,6 +512,7 @@ await writeStatus({
   powerBiRefreshedAt: snapshot.sourceTimestamp || null,
   reportWindow: snapshot.range ? `${snapshot.range.start} to ${shiftIsoDate(snapshot.range.endExclusive, -1)}` : null,
   snapshotGeneratedAt: snapshot.snapshotGeneratedAt,
+  sourceFingerprint: snapshot.sourceFingerprint,
   lastChangeAt: snapshot.snapshotGeneratedAt,
   rows: {
     articleOptions: articleOptions.length,
