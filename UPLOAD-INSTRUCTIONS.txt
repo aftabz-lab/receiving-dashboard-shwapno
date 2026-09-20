@@ -1,0 +1,29 @@
+RECEIVING DASHBOARD REFRESH FIX
+
+Upload these files to the root of the existing repository and preserve the
+included scripts folder path:
+
+  app.js
+  index.html
+  powerbi.js
+  snapshot.json
+  snapshot-status.json
+  scripts/update-snapshot.mjs
+
+Commit all six files together. Do not delete or replace any other repository
+file. GitHub Pages should redeploy automatically after the commit.
+
+Expected result after deployment:
+
+  - Default From date: 16-Aug-2026
+  - Default To date:   19-Sep-2026
+  - The saved snapshot appears first.
+  - The page then checks Power BI directly in the background.
+  - The Refresh button checks Power BI directly and no longer changes back to
+    the older saved date a few seconds later.
+  - While the page stays open, Power BI is checked once each hour.
+  - The existing GitHub snapshot workflow remains unchanged; future snapshots
+    also verify the latest actual daily data before choosing the To date.
+
+No CSS, font, layout, KPI, filter, drill-down, export, or workflow rule file is
+included or changed by this patch.

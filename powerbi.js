@@ -129,6 +129,22 @@ function dhakaToday() {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function isoDateFromValue(value) {
+  if (typeof value === "string") {
+    const direct = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+    if (direct) return direct[1];
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function hasTrendActivity(row) {
+  return [row?.Sales, row?.Receiving].some(value => {
+    const number = value == null || value === "" ? NaN : Number(value);
+    return Number.isFinite(number) && Math.abs(number) > 0.000001;
+  });
+}
+
 function collectLiterals(node, output = []) {
   if (!node || typeof node !== "object") return output;
   if (node.Literal && typeof node.Literal.Value === "string") output.push(node.Literal.Value);
@@ -671,6 +687,7 @@ export class PowerBIDataClient {
     this.measureIndex = null;
     this.unsupportedMeasures = new Set();
     this.underProbePromise = null;
+    this.sourceProbe = null;
   }
 
   async connect({ signal } = {}) {
@@ -690,6 +707,57 @@ export class PowerBIDataClient {
     const refresh = this.model.LastRefreshTime || payload.package?.LastRefreshTime || null;
     this.sourceTimestamp = refresh && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(refresh) ? `${refresh}Z` : refresh;
     return this;
+  }
+
+  /**
+   * Power BI can publish new fact rows before the saved report date slicer (or
+   * LastRefreshTime) catches up. Probe the daily facts through today and extend
+   * only the end of the saved scope when later active rows are present. The
+   * saved start date, categories, movement types and every dashboard query rule
+   * remain unchanged.
+   */
+  async refreshScopeFromData({ signal, dateTo = dhakaToday() } = {}) {
+    if (!this.model || !this.report || !this.scope) await this.connect({ signal });
+
+    const savedEnd = shiftIsoDate(this.scope.endExclusive, -1);
+    const probeEnd = /^\d{4}-\d{2}-\d{2}$/.test(String(dateTo || ""))
+      ? (String(dateTo) > savedEnd ? String(dateTo) : savedEnd)
+      : savedEnd;
+    const range = rangeForFilters(this.scope, {
+      dateFrom: this.scope.start,
+      dateTo: probeEnd,
+    });
+    const where = commonWhere(range, this.scope, { masterCategory: "all" });
+    const { decoded, queryTimestamp } = await this.runSpecs([{
+      key: "latestTrend",
+      query: createQuery([
+        column("d", "Date", "Date"),
+        sum("s", "ActualInvoicedQuantity", "Sales"),
+        sum("r", "qty_in_unit_of_entry", "Receiving"),
+      ], COMMON_FROM, where, MAX_QUERY_ROWS),
+    }], { signal });
+
+    const activeTrend = (decoded.latestTrend || [])
+      .filter(hasTrendActivity)
+      .map(row => ({ ...row, _isoDate: isoDateFromValue(row.Date) }))
+      .filter(row => row._isoDate)
+      .sort((left, right) => left._isoDate.localeCompare(right._isoDate));
+    const latestDate = activeTrend.at(-1)?._isoDate || null;
+    const detectedEndExclusive = latestDate ? shiftIsoDate(latestDate, 1) : null;
+    if (detectedEndExclusive && detectedEndExclusive > this.scope.endExclusive) {
+      this.scope = { ...this.scope, endExclusive: detectedEndExclusive };
+    }
+
+    const days = Math.max(1, Math.round(
+      (Date.parse(`${this.scope.endExclusive}T00:00:00Z`) - Date.parse(`${this.scope.start}T00:00:00Z`)) / 86_400_000
+    ));
+    this.sourceProbe = {
+      trend: activeTrend.map(({ _isoDate, ...row }) => row),
+      range: { start: this.scope.start, endExclusive: this.scope.endExclusive, days },
+      latestDate,
+      queryTimestamp,
+    };
+    return this.scope;
   }
 
   resolveMeasure(source, candidates) {
