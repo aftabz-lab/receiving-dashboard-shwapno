@@ -2,7 +2,7 @@ import { readFile, writeFile, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { PowerBIDataClient, POWER_BI_URL } from "../powerbi.js";
 
-const SNAPSHOT_VERSION = 10;
+const SNAPSHOT_VERSION = 11;
 const NUMERIC_FIELDS = ["Sales", "Receiving", "Inventory", "OverValue", "OverIncidents", "UnderIncidents"];
 const OPTION_KEYS = ["categoryOptions", "articleOptions", "outletOptions", "userOptions", "movementOptions"];
 const filters = {
@@ -341,9 +341,17 @@ try {
 
 const client = new PowerBIDataClient();
 await client.connect();
+try {
+  await client.refreshScopeFromData();
+  if (client.sourceProbe?.latestDate) console.log(`Latest active Power BI date: ${client.sourceProbe.latestDate}.`);
+} catch (error) {
+  // The normal saved-scope query below is still a safe fallback when the
+  // lightweight latest-date probe is temporarily unavailable.
+  console.warn(`Latest-date probe failed; using the saved Power BI scope: ${error?.message || error}`);
+}
 // The default dashboard window must mirror the saved Power BI date slicer,
-// including both boundary dates, rather than applying an independent rolling
-// 30-day calculation.
+// including both boundary dates. refreshScopeFromData may extend only its end
+// when Power BI has already published later active fact rows.
 filters.dateFrom = client.scope.start;
 filters.dateTo = shiftIsoDate(client.scope.endExclusive, -1);
 filters.days = Math.max(1, Math.round((Date.parse(`${client.scope.endExclusive}T00:00:00Z`) - Date.parse(`${client.scope.start}T00:00:00Z`)) / 86_400_000));
