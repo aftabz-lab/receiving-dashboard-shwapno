@@ -6,6 +6,10 @@ on:
     # both the Power BI refresh timestamp and a content fingerprint, then exits
     # quickly when the published report has not changed.
     - cron: "2-59/5 * * * *"
+  # The external one-minute Power BI watcher uses the same immediate event
+  # pattern as Visit Compliance. Scheduled polling remains as a fallback.
+  repository_dispatch:
+    types: [power_bi_report_updated]
   push:
     branches:
       - main
@@ -50,7 +54,9 @@ jobs:
 
       - name: Read Power BI and build partitioned snapshot
         env:
-          FORCE_SNAPSHOT: ${{ inputs.force && '1' || '' }}
+          # A watcher event represents a confirmed source-marker change and must
+          # bypass the old snapshot fingerprint. Manual force keeps its behavior.
+          FORCE_SNAPSHOT: ${{ github.event_name == 'repository_dispatch' && '1' || (inputs.force && '1' || '') }}
           # Optional repository variables. Leave them unset to keep the link and
           # cluster that are compiled into powerbi.js.
           PBI_EMBED_URL: ${{ vars.PBI_EMBED_URL }}
