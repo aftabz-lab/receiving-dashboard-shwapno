@@ -10,7 +10,7 @@
     try { document.documentElement.dataset.theme = localStorage.getItem("receiving-dashboard-theme") || "light"; } catch {}
   </script>
   <link rel="preconnect" href="https://wstxgbzmsbosinmhhjbl.supabase.co" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=20260916-3">
+  <link rel="stylesheet" href="./styles.css?v=20260927-1">
   <link rel="stylesheet" href="./kpi-typography.css?v=20260909-1">
 </head>
 <body>
@@ -68,11 +68,11 @@
         <label class="filter-field"><span>To date</span><input id="to-date-filter" type="date" aria-label="To date"></label>
         <label class="filter-field"><span>Business division</span><select id="master-category-filter"><option value="all" selected>Select all</option><option value="COMPANY GOODS">COMPANY GOODS</option><option value="FRESH PRODUCE">FRESH PRODUCE</option><option value="GENERAL MERCHANDISE">GENERAL MERCHANDISE</option><option value="LIFESTYLE">LIFESTYLE</option><option value="LOOSE COMMODITY">LOOSE COMMODITY</option><option value="PACKED COMMODITY">PACKED COMMODITY</option></select></label>
         <label class="filter-field"><span>Category name</span><select id="category-filter"><option value="all">All categories</option></select></label>
-        <label class="filter-field"><span>Division / Region</span><select id="region-filter"><option value="all">All divisions</option></select></label>
+        <div class="filter-field multi-picker-field"><span>Division / Region</span><button id="region-filter" class="multi-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="region-filter-menu"><span id="region-filter-label">All divisions</span><span class="multi-picker-chevron" aria-hidden="true">▾</span></button><div id="region-filter-menu" class="multi-picker-menu" hidden><label class="multi-picker-search"><span class="sr-only">Search divisions</span><input id="region-filter-search" type="search" autocomplete="off" placeholder="Search divisions"></label><div class="multi-picker-actions"><button id="region-select-matches" type="button">Select matches</button><button id="region-clear-selection" type="button">Clear</button></div><div id="region-filter-status" class="multi-picker-status" aria-live="polite">All divisions</div><div id="region-filter-options" class="multi-picker-options" role="listbox" aria-multiselectable="true"></div></div></div>
         <label class="filter-field search-combo"><span>RHO name</span><input id="rho-filter" type="search" list="rho-options" autocomplete="off" placeholder="All RHO · type to search"><datalist id="rho-options"></datalist></label>
         <label class="filter-field search-combo"><span>Zonal name</span><input id="zonal-filter" type="search" list="zonal-options" autocomplete="off" placeholder="All Zonal · type to search"><datalist id="zonal-options"></datalist></label>
         <label class="filter-field search-combo"><span>Outlet code or name</span><input id="outlet-filter" type="search" list="outlet-options" autocomplete="off" placeholder="All outlets · type to search"><datalist id="outlet-options"></datalist></label>
-        <label class="filter-field search-combo"><span>Article code or name</span><input id="article-filter" type="search" list="article-options" autocomplete="off" placeholder="All articles · type to search"><datalist id="article-options"></datalist></label>
+        <div class="filter-field search-combo multi-picker-field"><span>Article code or name</span><div class="multi-picker-input-wrap"><input id="article-filter" type="search" autocomplete="off" aria-haspopup="listbox" aria-expanded="false" aria-controls="article-filter-menu" placeholder="All articles · type to search"><button id="article-filter-toggle" class="multi-picker-toggle" type="button" aria-label="Open article selections" aria-expanded="false" aria-controls="article-filter-menu">▾</button></div><div id="article-filter-menu" class="multi-picker-menu" hidden><div class="multi-picker-actions"><button id="article-select-matches" type="button">Select all matches</button><button id="article-clear-selection" type="button">Clear</button></div><div id="article-filter-status" class="multi-picker-status" aria-live="polite">Type a word, then press Enter to select every match.</div><div id="article-filter-options" class="multi-picker-options" role="listbox" aria-multiselectable="true"></div></div></div>
         <label class="filter-field search-combo"><span>User code</span><input id="user-filter" type="search" list="user-options" autocomplete="off" placeholder="All users · type to search"><datalist id="user-options"></datalist></label>
         <label class="filter-field search-combo"><span>PO Number</span><input id="po-filter" type="search" inputmode="numeric" autocomplete="off" placeholder="All PO numbers · enter exact number"></label>
         <label class="filter-field search-combo"><span>Movement code</span><input id="movement-filter" type="search" list="movement-options" autocomplete="off" placeholder="All movements · type to search"><datalist id="movement-options"></datalist></label>
@@ -235,6 +235,6 @@
 
   <noscript><div class="noscript-message">JavaScript is required for this live dashboard. <a href="https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D">Open the Power BI report instead.</a></div></noscript>
 
-  <script type="module" src="./app.js?v=20260920-1"></script>
+  <script type="module" src="./app.js?v=20260927-1"></script>
 </body>
 </html>

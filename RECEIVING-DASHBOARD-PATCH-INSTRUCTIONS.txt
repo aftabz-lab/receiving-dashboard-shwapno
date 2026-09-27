@@ -1,0 +1,22 @@
+RECEIVING DASHBOARD — FILTER AND MANAGEMENT TABLE PATCH
+
+1. Extract the ZIP on your computer.
+2. Open the GitHub repository aftabz-lab/receiving-dashboard-shwapno.
+3. Upload these four files to the repository root and replace the existing files:
+     app.js
+     index.html
+     powerbi.js
+     styles.css
+4. Commit the four replacements together.
+5. Wait for GitHub Pages deployment to finish, then hard-refresh the dashboard.
+
+Included fixes only:
+  - Article code or name: type a partial name such as "soyabean" and press
+    Enter (or click Select all matches) to select every matching article.
+  - Division / Region: checkbox-based multiple selection.
+  - Every management table header displays a sorting sign.
+  - The first two columns remain frozen in all six management tables.
+  - Tables 2 and 3 show Outlet Code before Outlet Name and freeze both.
+
+No snapshot JSON, GitHub Actions workflow, font file, KPI rule, calculation,
+export rule, date rule, or automatic snapshot rule is included or changed.

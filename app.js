@@ -1,4 +1,4 @@
-import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260920-1";
+import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260927-1";
 import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
 import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
@@ -47,6 +47,9 @@ const state = {
   outletSearch: "",
   outletColumnFilters: {},
   showAllOutlets: false,
+  selectedRegions: new Set(),
+  selectedArticleNos: new Set(),
+  regionSuggestions: [],
   rhoSuggestions: [],
   zonalSuggestions: [],
   outletSuggestions: [],
@@ -108,19 +111,31 @@ const dom = {
   masterCategoryFilter: el("master-category-filter"),
   categoryFilter: el("category-filter"),
   regionFilter: el("region-filter"),
+  regionFilterLabel: el("region-filter-label"),
+  regionFilterMenu: el("region-filter-menu"),
+  regionFilterSearch: el("region-filter-search"),
+  regionFilterStatus: el("region-filter-status"),
+  regionFilterOptions: el("region-filter-options"),
+  regionSelectMatches: el("region-select-matches"),
+  regionClearSelection: el("region-clear-selection"),
   rhoFilter: el("rho-filter"),
   zonalFilter: el("zonal-filter"),
   rhoOptions: el("rho-options"),
   zonalOptions: el("zonal-options"),
   outletFilter: el("outlet-filter"),
   articleFilter: el("article-filter"),
+  articleFilterToggle: el("article-filter-toggle"),
+  articleFilterMenu: el("article-filter-menu"),
+  articleFilterStatus: el("article-filter-status"),
+  articleFilterOptions: el("article-filter-options"),
+  articleSelectMatches: el("article-select-matches"),
+  articleClearSelection: el("article-clear-selection"),
   userFilter: el("user-filter"),
   poFilter: el("po-filter"),
   movementFilter: el("movement-filter"),
   incidentFilter: el("incident-filter"),
   managementExcelButton: el("management-excel-download"),
   outletOptions: el("outlet-options"),
-  articleOptions: el("article-options"),
   userOptions: el("user-options"),
   movementOptions: el("movement-options"),
   cascadeNote: el("cascade-note"),
@@ -317,9 +332,31 @@ function uniqueSorted(values) {
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
 }
 
+function sortedSelections(selection) {
+  return uniqueSorted([...selection]);
+}
+
+function syncMultiFilterScalars() {
+  const regions = sortedSelections(state.selectedRegions);
+  const articles = sortedSelections(state.selectedArticleNos);
+  state.filters.region = regions.length === 1 ? regions[0] : "all";
+  state.filters.articleNo = articles.length === 1 ? articles[0] : "all";
+}
+
+function multiFiltersAreDefault() {
+  return state.selectedRegions.size === 0 && state.selectedArticleNos.size === 0;
+}
+
+function clearArticleSelection() {
+  state.selectedArticleNos.clear();
+  state.filters.articleNo = "all";
+  if (dom.articleFilter) dom.articleFilter.value = "";
+}
+
 function filtersAreDefault() {
   const nonDateKeys = Object.keys(DEFAULT_FILTERS).filter(key => !["days", "dateFrom", "dateTo"].includes(key));
-  return nonDateKeys.every(key => state.filters[key] === DEFAULT_FILTERS[key])
+  return multiFiltersAreDefault()
+    && nonDateKeys.every(key => state.filters[key] === DEFAULT_FILTERS[key])
     && (state.reportDefaultDates || (
       state.filters.days === DEFAULT_FILTERS.days
       && state.filters.dateFrom === DEFAULT_FILTERS.dateFrom
@@ -507,6 +544,7 @@ async function writeFilteredSnapshot(filters, sourceTimestamp, data) {
 
 function snapshotMatchesCurrentFilters(snapshot) {
   if (!snapshot?.range) return false;
+  if (!multiFiltersAreDefault()) return false;
   const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "poNumber", "movementCode"];
   if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return false;
   if (state.filters.dateFrom && state.filters.dateTo) {
@@ -517,6 +555,7 @@ function snapshotMatchesCurrentFilters(snapshot) {
 
 function embeddedRangeSnapshot(snapshot) {
   if (!Array.isArray(snapshot?.cachedRanges)) return null;
+  if (!multiFiltersAreDefault()) return null;
   const nonDateKeys = ["masterCategory", "category", "region", "rho", "zonal", "outletCode", "articleNo", "userCode", "poNumber", "movementCode"];
   if (nonDateKeys.some(key => state.filters[key] !== DEFAULT_FILTERS[key])) return null;
   let start = state.filters.dateFrom;
@@ -623,7 +662,7 @@ function currentOrganizationRows(excluded = "") {
     : state.organization.rows;
 
   return base.filter(row => {
-    if (excluded !== "region" && state.filters.region !== "all" && row.Division !== state.filters.region) return false;
+    if (excluded !== "region" && state.selectedRegions.size && !state.selectedRegions.has(row.Division)) return false;
     if (excluded !== "rho" && state.filters.rho !== "all" && row.RHO !== state.filters.rho) return false;
     if (excluded !== "zonal" && state.filters.zonal !== "all" && row.Zonal !== state.filters.zonal) return false;
     if (excluded !== "outlet" && state.filters.outletCode !== "all" && row.OutletCode !== state.filters.outletCode) return false;
@@ -636,12 +675,15 @@ function organizationScopeCodes() {
     return [normalizeOutletCode(state.filters.outletCode)];
   }
   if (!state.organization?.rows) return null;
-  const active = ["region", "rho", "zonal"].some(key => state.filters[key] !== "all");
+  const active = state.selectedRegions.size > 0 || ["rho", "zonal"].some(key => state.filters[key] !== "all");
   if (!active) return null;
   return currentOrganizationRows().map(row => row.OutletCode);
 }
 
 function buildPowerBIFilters() {
+  syncMultiFilterScalars();
+  const selectedRegions = sortedSelections(state.selectedRegions);
+  const selectedArticleNos = sortedSelections(state.selectedArticleNos);
   const result = {
     days: state.filters.days,
     dateFrom: state.filters.dateFrom,
@@ -655,8 +697,10 @@ function buildPowerBIFilters() {
     region: "all",
   };
 
+  if (selectedArticleNos.length > 1) result.articleNos = selectedArticleNos;
+
   if (state.organization?.rows) {
-    const onlyStandardRegion = state.filters.region !== "all"
+    const onlyStandardRegion = selectedRegions.length === 1
       && state.filters.region !== "DhakaGBUD"
       && state.filters.rho === "all"
       && state.filters.zonal === "all"
@@ -666,6 +710,8 @@ function buildPowerBIFilters() {
       const codes = organizationScopeCodes();
       if (codes) result.outletCodes = codes;
     }
+  } else if (selectedRegions.length > 1) {
+    result.regions = selectedRegions;
   } else if (state.filters.region !== "all") {
     result.region = state.filters.region;
   }
@@ -684,6 +730,162 @@ function canonicalArticleLabel(articleNo) {
   return row ? `${row.ArticleNo} — ${row.ArticleName || "Unnamed article"}` : String(articleNo);
 }
 
+function articleCodeFromLabel(label) {
+  return String(label || "").split("—")[0].trim();
+}
+
+function regionMatches(query = "") {
+  const needle = query.trim().toLocaleLowerCase();
+  const values = uniqueSorted([...state.regionSuggestions, ...state.selectedRegions]);
+  return needle ? values.filter(value => value.toLocaleLowerCase().includes(needle)) : values;
+}
+
+function articleMatches(query = "") {
+  const needle = query.trim().toLocaleLowerCase();
+  const labels = [...state.articleSuggestions];
+  state.selectedArticleNos.forEach(code => {
+    if (!labels.some(label => articleCodeFromLabel(label) === String(code))) labels.push(canonicalArticleLabel(code));
+  });
+  const matches = needle ? labels.filter(label => label.toLocaleLowerCase().includes(needle)) : labels;
+  const selected = [];
+  const unselected = [];
+  matches.forEach(label => (state.selectedArticleNos.has(articleCodeFromLabel(label)) ? selected : unselected).push(label));
+  return [...selected, ...unselected];
+}
+
+function renderRegionPicker() {
+  if (!dom.regionFilterOptions) return;
+  const query = dom.regionFilterSearch?.value || "";
+  const matches = regionMatches(query);
+  const selected = state.selectedRegions.size;
+  dom.regionFilterLabel.textContent = selected === 0
+    ? "All divisions"
+    : selected === 1
+      ? sortedSelections(state.selectedRegions)[0]
+      : `${selected} divisions selected`;
+  dom.regionFilterStatus.textContent = query.trim()
+    ? `${matches.length} matching division${matches.length === 1 ? "" : "s"} · ${selected} selected`
+    : selected
+      ? `${selected} division${selected === 1 ? "" : "s"} selected`
+      : "All divisions";
+  dom.regionSelectMatches.disabled = !query.trim() || matches.length === 0;
+  dom.regionClearSelection.disabled = selected === 0;
+  dom.regionFilterOptions.innerHTML = matches.length
+    ? matches.map(value => `<label class="multi-picker-option" role="option" aria-selected="${state.selectedRegions.has(value)}"><input type="checkbox" data-region-value="${escapeHtml(value)}"${state.selectedRegions.has(value) ? " checked" : ""}><span title="${escapeHtml(value)}">${escapeHtml(value)}</span></label>`).join("")
+    : '<div class="multi-picker-empty">No matching divisions</div>';
+}
+
+function renderArticlePicker() {
+  if (!dom.articleFilterOptions) return;
+  const query = dom.articleFilter.value || "";
+  const matches = articleMatches(query);
+  const selected = state.selectedArticleNos.size;
+  const visible = matches.slice(0, DATALIST_RENDER_LIMIT);
+  dom.articleFilter.placeholder = selected === 0
+    ? "All articles · type to search"
+    : selected === 1
+      ? `${sortedSelections(state.selectedArticleNos)[0]} selected · type to search`
+      : `${selected} articles selected · type to search`;
+  dom.articleFilterStatus.textContent = query.trim()
+    ? `${matches.length} matching article${matches.length === 1 ? "" : "s"} · press Enter to select all${matches.length > visible.length ? ` · showing first ${visible.length}` : ""}`
+    : selected
+      ? `${selected} article${selected === 1 ? "" : "s"} selected · type another word to replace the selection with all matches`
+      : "Type a word, then press Enter to select every match.";
+  dom.articleSelectMatches.disabled = !query.trim() || matches.length === 0;
+  dom.articleClearSelection.disabled = selected === 0;
+  dom.articleFilterOptions.innerHTML = visible.length
+    ? visible.map(label => {
+      const code = articleCodeFromLabel(label);
+      const checked = state.selectedArticleNos.has(code);
+      return `<label class="multi-picker-option" role="option" aria-selected="${checked}"><input type="checkbox" data-article-code="${escapeHtml(code)}"${checked ? " checked" : ""}><span title="${escapeHtml(label)}">${escapeHtml(label)}</span></label>`;
+    }).join("")
+    : '<div class="multi-picker-empty">No matching articles</div>';
+}
+
+function setMultiPickerOpen(type, open) {
+  const region = type === "region";
+  const menu = region ? dom.regionFilterMenu : dom.articleFilterMenu;
+  const control = region ? dom.regionFilter : dom.articleFilter;
+  const toggle = region ? dom.regionFilter : dom.articleFilterToggle;
+  if (!menu || !control || !toggle) return;
+  menu.hidden = !open;
+  control.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const otherType = region ? "article" : "region";
+    setMultiPickerOpen(otherType, false);
+    if (region) {
+      renderRegionPicker();
+      window.requestAnimationFrame(() => dom.regionFilterSearch?.focus());
+    } else {
+      renderArticlePicker();
+      window.requestAnimationFrame(() => dom.articleFilter.focus());
+    }
+  }
+}
+
+function clearOrganizationDependents() {
+  state.filters.rho = "all";
+  state.filters.zonal = "all";
+  state.filters.outletCode = "all";
+  dom.rhoFilter.value = "";
+  dom.zonalFilter.value = "";
+  dom.outletFilter.value = "";
+}
+
+let multiFilterApplyTimer = 0;
+
+function scheduleMultiFilterLoad() {
+  window.clearTimeout(multiFilterApplyTimer);
+  multiFilterApplyTimer = window.setTimeout(() => {
+    multiFilterApplyTimer = 0;
+    loadDashboard();
+  }, 450);
+}
+
+function applyRegionValues(values, { immediate = false } = {}) {
+  state.selectedRegions = new Set(uniqueSorted([...values]));
+  syncMultiFilterScalars();
+  clearOrganizationDependents();
+  renderRegionPicker();
+  updateActiveFilterSummary();
+  if (immediate) {
+    window.clearTimeout(multiFilterApplyTimer);
+    multiFilterApplyTimer = 0;
+    loadDashboard();
+  } else scheduleMultiFilterLoad();
+}
+
+function applyArticleValues(values, { immediate = false } = {}) {
+  state.selectedArticleNos = new Set(uniqueSorted([...values]));
+  syncMultiFilterScalars();
+  renderArticlePicker();
+  updateActiveFilterSummary();
+  if (immediate) {
+    window.clearTimeout(multiFilterApplyTimer);
+    multiFilterApplyTimer = 0;
+    loadDashboard();
+  } else scheduleMultiFilterLoad();
+}
+
+function selectAllArticleMatches() {
+  const query = dom.articleFilter.value.trim();
+  const matches = query ? articleMatches(query) : [];
+  if (!matches.length) {
+    dom.articleFilter.setAttribute("aria-invalid", "true");
+    dom.cascadeNote.textContent = `No articles contain “${query}”.`;
+    renderArticlePicker();
+    return;
+  }
+  dom.articleFilter.removeAttribute("aria-invalid");
+  const codes = matches.map(articleCodeFromLabel).filter(Boolean);
+  applyArticleValues(codes, { immediate: true });
+  dom.articleFilter.value = "";
+  dom.cascadeNote.textContent = `${codes.length} matching article${codes.length === 1 ? "" : "s"} selected. All related results are updating.`;
+  renderArticlePicker();
+  setMultiPickerOpen("article", false);
+}
+
 function updateCascadingOptions() {
   if (!state.data) return;
   const categoryOptions = state.data.categoryOptions || [];
@@ -698,7 +900,7 @@ function updateCascadingOptions() {
   addSelectOptions(dom.categoryFilter, categoryOptions.map(row => row.Category), "All categories", state.filters.category);
 
   if (state.organization?.rows) {
-    addSelectOptions(dom.regionFilter, currentOrganizationRows("region").map(row => row.Division), "All divisions", state.filters.region);
+    state.regionSuggestions = uniqueSorted(currentOrganizationRows("region").map(row => row.Division));
     state.rhoSuggestions = uniqueSorted(currentOrganizationRows("rho").map(row => row.RHO));
     state.zonalSuggestions = uniqueSorted(currentOrganizationRows("zonal").map(row => row.Zonal));
     fillDatalist(dom.rhoOptions, state.rhoSuggestions);
@@ -708,7 +910,7 @@ function updateCascadingOptions() {
     dom.rhoFilter.disabled = false;
     dom.zonalFilter.disabled = false;
 
-    const organizationFilterActive = ["region", "rho", "zonal"].some(key => state.filters[key] !== "all");
+    const organizationFilterActive = state.selectedRegions.size > 0 || ["rho", "zonal"].some(key => state.filters[key] !== "all");
     if (organizationFilterActive) {
       state.outletSuggestions = currentOrganizationRows("outlet")
         .sort((a, b) => a.OutletCode.localeCompare(b.OutletCode, undefined, { numeric: true }))
@@ -724,7 +926,7 @@ function updateCascadingOptions() {
         });
     }
   } else {
-    addSelectOptions(dom.regionFilter, outletOptions.map(row => row.Region), "All divisions", state.filters.region);
+    state.regionSuggestions = uniqueSorted(outletOptions.map(row => row.Region));
     state.rhoSuggestions = [];
     state.zonalSuggestions = [];
     fillDatalist(dom.rhoOptions, []);
@@ -743,14 +945,14 @@ function updateCascadingOptions() {
   state.articleSuggestions = articleOptions
     .filter(row => row.ArticleNo && !seenArticles.has(String(row.ArticleNo)) && seenArticles.add(String(row.ArticleNo)))
     .map(row => `${row.ArticleNo} — ${row.ArticleName || "Unnamed article"}`);
-  fillDatalist(dom.articleOptions, state.articleSuggestions);
   state.userSuggestions = uniqueSorted(userOptions.map(row => row.UserCode));
   state.movementSuggestions = uniqueSorted(movementOptions.map(row => row.MovementCode));
   fillDatalist(dom.userOptions, state.userSuggestions);
   fillDatalist(dom.movementOptions, state.movementSuggestions);
 
   dom.outletFilter.value = state.filters.outletCode === "all" ? "" : canonicalOutletLabel(state.filters.outletCode);
-  dom.articleFilter.value = state.filters.articleNo === "all" ? "" : canonicalArticleLabel(state.filters.articleNo);
+  renderRegionPicker();
+  renderArticlePicker();
   dom.userFilter.value = state.filters.userCode === "all" ? "" : state.filters.userCode;
   dom.poFilter.value = state.filters.poNumber === "all" ? "" : state.filters.poNumber;
   dom.movementFilter.value = state.filters.movementCode === "all" ? "" : state.filters.movementCode;
@@ -764,11 +966,13 @@ function activeFilterLabels() {
     : `${state.filters.days} days`];
   if (state.filters.masterCategory !== "all") labels.push(state.filters.masterCategory);
   if (state.filters.category !== "all") labels.push(state.filters.category);
-  if (state.filters.region !== "all") labels.push(state.filters.region);
+  if (state.selectedRegions.size === 1) labels.push(sortedSelections(state.selectedRegions)[0]);
+  else if (state.selectedRegions.size > 1) labels.push(`${state.selectedRegions.size} divisions`);
   if (state.filters.rho !== "all") labels.push(`RHO: ${state.filters.rho}`);
   if (state.filters.zonal !== "all") labels.push(`Zonal: ${state.filters.zonal}`);
   if (state.filters.outletCode !== "all") labels.push(`Outlet: ${state.filters.outletCode}`);
-  if (state.filters.articleNo !== "all") labels.push(`Article: ${state.filters.articleNo}`);
+  if (state.selectedArticleNos.size === 1) labels.push(`Article: ${sortedSelections(state.selectedArticleNos)[0]}`);
+  else if (state.selectedArticleNos.size > 1) labels.push(`${state.selectedArticleNos.size} articles`);
   if (state.filters.userCode !== "all") labels.push(`User: ${state.filters.userCode}`);
   if (state.filters.poNumber !== "all") labels.push(`PO: ${state.filters.poNumber}`);
   if (state.filters.movementCode !== "all") labels.push(`Movement: ${state.filters.movementCode}`);
@@ -792,8 +996,10 @@ function setLoading(loading) {
   dom.loadingBar.classList.toggle("is-active", loading);
   dom.refreshButton.disabled = loading;
   dom.refreshButton.classList.toggle("is-refreshing", loading);
-  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.userFilter, dom.poFilter, dom.movementFilter, dom.incidentFilter, dom.resetButton]
+  [dom.periodFilter, dom.fromDateFilter, dom.toDateFilter, dom.masterCategoryFilter, dom.categoryFilter, dom.regionFilter, dom.rhoFilter, dom.zonalFilter, dom.outletFilter, dom.articleFilter, dom.articleFilterToggle, dom.userFilter, dom.poFilter, dom.movementFilter, dom.incidentFilter, dom.resetButton]
     .forEach(node => { node.disabled = loading; });
+  if (dom.regionFilterMenu) dom.regionFilterMenu.inert = loading;
+  if (dom.articleFilterMenu) dom.articleFilterMenu.inert = loading;
   dom.managementExcelButton.disabled = loading || state.managementExportBusy || !state.data;
 
   if (loading) {
@@ -1189,6 +1395,7 @@ function managementTableDefinitions(prefix) {
       title: `Table 2 – ${prefix} Receiving Incidents By Article-Group (For Loose Commodity & PnP)`,
       defaultSort: `${prefix}Value`,
       columns: [
+        { key: "OutletCode", label: "Outlet Code" },
         { key: "OutletName", label: "OutletName" },
         { key: "ArticleCombo", label: "Article Combo" },
         ...operationalManagementColumns(prefix),
@@ -1199,6 +1406,7 @@ function managementTableDefinitions(prefix) {
       title: `Table 3 – ${prefix} Receiving Incidents By Outlet`,
       defaultSort: `${prefix}Value`,
       columns: [
+        { key: "OutletCode", label: "Outlet Code" },
         { key: "OutletName", label: "OutletName" },
         ...operationalManagementColumns(prefix),
         { key: "Sorting", label: "sorting", numeric: true },
@@ -1287,7 +1495,8 @@ function managementExportDefinition(tableNumber, mode, missingColumns = []) {
   const definition = managementTableDefinitionFor(tableNumber, mode, missingColumns);
   if (![1, 2, 3].includes(Number(tableNumber))) return definition;
 
-  const columns = definition.columns.filter(column => column.key !== "OutletName");
+  const organizationKeys = new Set(["OutletCode", "OutletName", "Zonal", "RHO"]);
+  const columns = definition.columns.filter(column => !organizationKeys.has(column.key));
   columns.unshift(
     { key: "OutletCode", label: "Outlet Code" },
     { key: "OutletName", label: "Outlet Name" },
@@ -2009,8 +2218,11 @@ function detailFiltersForContext(context) {
   if (!context) return filters;
   if (context.type === "outlet") {
     filters.region = "all";
+    delete filters.regions;
     filters.outletCodes = [context.value];
   } else if (context.type === "region") {
+    delete filters.regions;
+    delete filters.outletCodes;
     if (context.value === "__UNASSIGNED__") {
       filters.region = "all";
       filters.outletCodes = state.data.enrichedOutlets.filter(row => !row.Region && row.OutletCode).map(row => row.OutletCode);
@@ -2020,6 +2232,7 @@ function detailFiltersForContext(context) {
   } else if (context.type === "category") {
     filters.category = context.value;
     filters.articleNo = "all";
+    delete filters.articleNos;
   }
   return filters;
 }
@@ -2073,12 +2286,14 @@ function detailScopeLabel() {
   else if (state.filters.outletCode !== "all") labels.push(canonicalOutletLabel(state.filters.outletCode));
   else if (state.filters.zonal !== "all") labels.push(state.filters.zonal);
   else if (state.filters.rho !== "all") labels.push(state.filters.rho);
-  else if (state.filters.region !== "all") labels.push(state.filters.region);
+  else if (state.selectedRegions.size === 1) labels.push(sortedSelections(state.selectedRegions)[0]);
+  else if (state.selectedRegions.size > 1) labels.push(`${state.selectedRegions.size} divisions`);
   else labels.push(state.filters.masterCategory === "all" ? "All business divisions" : "Current dashboard scope");
 
   if (state.filters.masterCategory !== "all") labels.push(`Business division ${state.filters.masterCategory}`);
   if (state.filters.category !== "all" && state.filters.category !== state.detailContext?.value) labels.push(state.filters.category);
-  if (state.filters.articleNo !== "all") labels.push(`Article ${state.filters.articleNo}`);
+  if (state.selectedArticleNos.size === 1) labels.push(`Article ${sortedSelections(state.selectedArticleNos)[0]}`);
+  else if (state.selectedArticleNos.size > 1) labels.push(`${state.selectedArticleNos.size} articles`);
   if (state.filters.userCode !== "all") labels.push(`User ${state.filters.userCode}`);
   if (state.filters.poNumber !== "all") labels.push(`PO ${state.filters.poNumber}`);
   if (state.filters.movementCode !== "all") labels.push(`Movement ${state.filters.movementCode}`);
@@ -2110,10 +2325,14 @@ function currentManagementFilters() {
     filters.outletCodes = additions.outletCodes;
   }
   for (const key of ["category", "articleNo", "userCode", "poNumber", "movementCode"]) {
-    if (additions[key]) filters[key] = additions[key];
+    if (additions[key]) {
+      filters[key] = additions[key];
+      if (key === "articleNo") delete filters.articleNos;
+    }
   }
   if (state.detailSourceSearch?.articleNo) {
     filters.articleNo = state.detailSourceSearch.articleNo;
+    delete filters.articleNos;
     // An exact search follows the dashboard's active business-division scope.
     // When the dashboard is on All, query the article across all divisions.
     if (state.filters.masterCategory === "all") filters.masterCategory = "all";
@@ -2133,6 +2352,7 @@ function configureManagementTable(tableNumber) {
   // Force the header, and with it the per-column search inputs, to rebuild.
   state.detailHeaderSignature = "";
   dom.detailTableGrid.classList.toggle("incident-user-table", state.detailTableNumber === 6);
+  dom.detailTableGrid.classList.toggle("outlet-leading-table", [2, 3].includes(state.detailTableNumber));
   setText("detail-title", table.title);
   setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
   dom.detailSearch.placeholder = state.detailTableNumber === 5
@@ -2308,6 +2528,8 @@ function positionColumnFilters() {
   if (!row) return;
   const offset = dom.detailHead.offsetHeight;
   row.querySelectorAll("th").forEach(cell => { cell.style.top = `${offset}px`; });
+  const firstColumn = dom.detailHead.querySelector("th:first-child");
+  if (firstColumn) dom.detailTableGrid.style.setProperty("--detail-first-column-width", `${firstColumn.offsetWidth}px`);
 }
 
 function renderColumnFilterRow() {
@@ -2429,6 +2651,7 @@ function renderDetail() {
     dom.detailTable.innerHTML = `<tr><td colspan="${state.detailColumns.length}" class="empty-cell">${searching
       ? "No rows match the current search. Clear the column boxes to see the full table."
       : `The source returned no ${incidentTableType()}-receiving rows for ${escapeHtml(detailScopeLabel())}.`}</td></tr>`;
+    window.requestAnimationFrame(positionColumnFilters);
     return;
   }
 
@@ -2436,6 +2659,7 @@ function renderDetail() {
     const display = managementDisplay(row, column);
     return `<td data-column-key="${escapeHtml(column.key)}" title="${escapeHtml(display)}"${column.numeric ? ' class="numeric"' : column.status ? ' class="status-column"' : ""}>${managementCell(row, column)}</td>`;
   }).join("")}</tr>`).join("");
+  window.requestAnimationFrame(positionColumnFilters);
 }
 
 function detailArticleCandidate(value) {
@@ -2472,6 +2696,10 @@ function handleDetailSearchInput(value, immediate = false) {
 }
 
 async function loadDashboard({ refreshMetadata = false, snapshotOnly = false, forceLive = false } = {}) {
+  if (multiFilterApplyTimer) {
+    window.clearTimeout(multiFilterApplyTimer);
+    multiFilterApplyTimer = 0;
+  }
   const sequence = ++state.loadSequence;
   if (state.loadController) state.loadController.abort();
   state.loadController = null;
@@ -3063,26 +3291,49 @@ dom.periodFilter.addEventListener("change", event => {
 dom.masterCategoryFilter.addEventListener("change", event => {
   state.filters.masterCategory = event.target.value;
   state.filters.category = "all";
-  state.filters.articleNo = "all";
-  dom.articleFilter.value = "";
+  clearArticleSelection();
   loadDashboard();
 });
 dom.categoryFilter.addEventListener("change", event => {
   state.filters.category = event.target.value;
-  state.filters.articleNo = "all";
-  dom.articleFilter.value = "";
+  clearArticleSelection();
   loadDashboard();
 });
-dom.regionFilter.addEventListener("change", event => {
-  state.filters.region = event.target.value;
-  state.filters.rho = "all";
-  state.filters.zonal = "all";
-  state.filters.outletCode = "all";
-  dom.rhoFilter.value = "";
-  dom.zonalFilter.value = "";
-  dom.outletFilter.value = "";
-  updateCascadingOptions();
-  loadDashboard();
+dom.regionFilter.addEventListener("click", () => setMultiPickerOpen("region", dom.regionFilterMenu.hidden));
+dom.regionFilterSearch.addEventListener("input", renderRegionPicker);
+dom.regionFilterSearch.addEventListener("keydown", event => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const matches = regionMatches(dom.regionFilterSearch.value);
+  if (dom.regionFilterSearch.value.trim() && matches.length) {
+    applyRegionValues(matches, { immediate: true });
+    dom.regionFilterSearch.value = "";
+    dom.cascadeNote.textContent = `${matches.length} matching division${matches.length === 1 ? "" : "s"} selected.`;
+    setMultiPickerOpen("region", false);
+  }
+});
+dom.regionSelectMatches.addEventListener("click", () => {
+  const matches = regionMatches(dom.regionFilterSearch.value);
+  if (!dom.regionFilterSearch.value.trim() || !matches.length) return;
+  applyRegionValues(matches, { immediate: true });
+  dom.regionFilterSearch.value = "";
+  dom.cascadeNote.textContent = `${matches.length} matching division${matches.length === 1 ? "" : "s"} selected.`;
+  setMultiPickerOpen("region", false);
+});
+dom.regionClearSelection.addEventListener("click", () => {
+  applyRegionValues([], { immediate: true });
+  dom.regionFilterSearch.value = "";
+  dom.cascadeNote.textContent = "All divisions selected.";
+  setMultiPickerOpen("region", false);
+});
+dom.regionFilterOptions.addEventListener("change", event => {
+  const checkbox = event.target.closest("[data-region-value]");
+  if (!checkbox) return;
+  const next = new Set(state.selectedRegions);
+  if (checkbox.checked) next.add(checkbox.dataset.regionValue);
+  else next.delete(checkbox.dataset.regionValue);
+  applyRegionValues(next);
+  dom.cascadeNote.textContent = "Applying the selected divisions; choose more divisions to include them together.";
 });
 [dom.rhoFilter, dom.zonalFilter].forEach(input => {
   const type = input === dom.rhoFilter ? "rho" : "zonal";
@@ -3099,22 +3350,70 @@ dom.regionFilter.addEventListener("change", event => {
   });
 });
 
-[dom.outletFilter, dom.articleFilter].forEach(input => {
-  const type = input === dom.outletFilter ? "outlet" : "article";
-  input.addEventListener("change", () => applySearchSelection(type));
-  input.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      applySearchSelection(type);
-    }
-  });
-  input.addEventListener("input", () => {
-    refreshSearchDatalist(type === "outlet" ? dom.outletOptions : dom.articleOptions, type === "outlet" ? state.outletSuggestions : state.articleSuggestions, input.value);
-    if (!input.value && state.filters[type === "outlet" ? "outletCode" : "articleNo"] !== "all") applySearchSelection(type);
-    else dom.cascadeNote.textContent = `Type an exact ${type} code/name, then press Enter or choose a suggestion.`;
-  });
-  input.addEventListener("focus", () => refreshSearchDatalist(type === "outlet" ? dom.outletOptions : dom.articleOptions, type === "outlet" ? state.outletSuggestions : state.articleSuggestions, input.value));
+dom.outletFilter.addEventListener("change", () => applySearchSelection("outlet"));
+dom.outletFilter.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applySearchSelection("outlet");
+  }
 });
+dom.outletFilter.addEventListener("input", () => {
+  refreshSearchDatalist(dom.outletOptions, state.outletSuggestions, dom.outletFilter.value);
+  if (!dom.outletFilter.value && state.filters.outletCode !== "all") applySearchSelection("outlet");
+  else dom.cascadeNote.textContent = "Type an exact outlet code/name, then press Enter or choose a suggestion.";
+});
+dom.outletFilter.addEventListener("focus", () => refreshSearchDatalist(dom.outletOptions, state.outletSuggestions, dom.outletFilter.value));
+
+dom.articleFilter.addEventListener("input", () => {
+  dom.articleFilter.removeAttribute("aria-invalid");
+  setMultiPickerOpen("article", true);
+  renderArticlePicker();
+  dom.cascadeNote.textContent = "Type any part of an article name, then press Enter to select every matching article.";
+});
+dom.articleFilter.addEventListener("focus", () => setMultiPickerOpen("article", true));
+dom.articleFilter.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    selectAllArticleMatches();
+  } else if (event.key === "Escape") {
+    setMultiPickerOpen("article", false);
+  }
+});
+dom.articleFilterToggle.addEventListener("click", () => setMultiPickerOpen("article", dom.articleFilterMenu.hidden));
+dom.articleSelectMatches.addEventListener("click", selectAllArticleMatches);
+dom.articleClearSelection.addEventListener("click", () => {
+  dom.articleFilter.value = "";
+  applyArticleValues([], { immediate: true });
+  dom.cascadeNote.textContent = "All articles selected.";
+  setMultiPickerOpen("article", false);
+});
+dom.articleFilterOptions.addEventListener("change", event => {
+  const checkbox = event.target.closest("[data-article-code]");
+  if (!checkbox) return;
+  const next = new Set(state.selectedArticleNos);
+  if (checkbox.checked) next.add(checkbox.dataset.articleCode);
+  else next.delete(checkbox.dataset.articleCode);
+  applyArticleValues(next);
+  dom.cascadeNote.textContent = "Applying the selected articles; use the search box and Enter to select every name match.";
+});
+
+document.addEventListener("click", event => {
+  if (!event.target.closest(".multi-picker-field")) {
+    setMultiPickerOpen("region", false);
+    setMultiPickerOpen("article", false);
+  }
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  setMultiPickerOpen("region", false);
+  setMultiPickerOpen("article", false);
+});
+
+/*
+ * Article selection intentionally uses substring matching. For example,
+ * entering "soyabean" and pressing Enter selects every source option
+ * whose code or name contains that word.
+ */
 
 [[dom.userFilter, "userCode"], [dom.movementFilter, "movementCode"]].forEach(([input, type]) => {
   input.addEventListener("change", () => applyCodeSearch(type));
@@ -3151,7 +3450,13 @@ dom.resetButton.addEventListener("click", () => {
     window.clearTimeout(dateApplyTimer);
     dateApplyTimer = 0;
   }
+  if (multiFilterApplyTimer) {
+    window.clearTimeout(multiFilterApplyTimer);
+    multiFilterApplyTimer = 0;
+  }
   state.filters = { ...DEFAULT_FILTERS };
+  state.selectedRegions.clear();
+  state.selectedArticleNos.clear();
   state.reportDefaultDates = true;
   applyReportDefaultDateRange(state.sharedSnapshot);
   state.incidentMode = "over";
@@ -3165,7 +3470,7 @@ dom.resetButton.addEventListener("click", () => {
   dom.toDateFilter.removeAttribute("aria-invalid");
   dom.masterCategoryFilter.value = "all";
   dom.categoryFilter.value = "all";
-  dom.regionFilter.value = "all";
+  dom.regionFilterSearch.value = "";
   dom.rhoFilter.value = "";
   dom.zonalFilter.value = "";
   dom.outletFilter.value = "";
@@ -3178,6 +3483,10 @@ dom.resetButton.addEventListener("click", () => {
   state.outletSearch = "";
   state.outletColumnFilters = {};
   state.showAllOutlets = false;
+  setMultiPickerOpen("region", false);
+  setMultiPickerOpen("article", false);
+  renderRegionPicker();
+  renderArticlePicker();
   if (state.data) renderOutlets();
   loadDashboard();
 });
@@ -3186,6 +3495,10 @@ dom.filterToggle.addEventListener("click", () => {
   const open = dom.filtersPanel.classList.toggle("is-open");
   dom.filterToggle.classList.toggle("is-active", open);
   dom.filterToggle.setAttribute("aria-expanded", String(open));
+  if (!open) {
+    setMultiPickerOpen("region", false);
+    setMultiPickerOpen("article", false);
+  }
 });
 
 dom.themeButton.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));

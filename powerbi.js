@@ -382,12 +382,16 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
     });
   }
 
-  if (!excluded.has("region") && filters.region && filters.region !== "all") {
+  const selectedRegions = Array.isArray(filters.regions)
+    ? [...new Set(filters.regions.map(value => String(value || "").trim()).filter(Boolean))]
+    : [];
+  if (!excluded.has("region") && (selectedRegions.length || (filters.region && filters.region !== "all"))) {
+    const regions = selectedRegions.length ? selectedRegions : [filters.region];
     conditions.push({
       Condition: {
         In: {
           Expressions: [field("o", "RegionName")],
-          Values: [[literal(stringLiteral(filters.region))]],
+          Values: regions.map(value => [literal(stringLiteral(value))]),
         },
       },
     });
@@ -405,12 +409,16 @@ function commonWhere(range, scope, filters = {}, excluded = new Set()) {
     });
   }
 
-  if (!excluded.has("article") && filters.articleNo && filters.articleNo !== "all") {
+  const selectedArticles = Array.isArray(filters.articleNos)
+    ? [...new Set(filters.articleNos.map(value => String(value || "").trim()).filter(Boolean))]
+    : [];
+  if (!excluded.has("article") && (selectedArticles.length || (filters.articleNo && filters.articleNo !== "all"))) {
+    const articles = selectedArticles.length ? selectedArticles : [filters.articleNo];
     conditions.push({
       Condition: {
         In: {
           Expressions: [field("a", "ArticleNo")],
-          Values: [[literal(stringLiteral(filters.articleNo))]],
+          Values: articles.map(value => [literal(stringLiteral(value))]),
         },
       },
     });
