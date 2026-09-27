@@ -1,0 +1,19 @@
+RECEIVING DASHBOARD — TABLE 1 / SORT ARROW PATCH
+
+1. Extract the ZIP on your computer.
+2. Upload these three files to the root of the existing
+   aftabz-lab/receiving-dashboard-shwapno repository:
+     app.js
+     index.html
+     styles.css
+3. Replace the existing files and commit all three together.
+4. Wait for GitHub Pages deployment, then hard-refresh the dashboard.
+
+Included fixes only:
+  - Table 1 now shows Outlet Code before Outlet Name.
+  - Table 1 keeps Outlet Code and Outlet Name as its two frozen columns.
+  - Sorting arrow signs are black.
+
+No Power BI query file, snapshot JSON, GitHub Actions workflow, font, filter,
+calculation, export rule, date rule, or automatic snapshot rule is included or
+changed.

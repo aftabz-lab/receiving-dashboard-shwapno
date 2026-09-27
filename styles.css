@@ -2078,7 +2078,7 @@ html[data-theme="dark"] .multi-picker-actions button { border-color: #38717a; ba
 html[data-theme="dark"] .multi-picker-actions button:last-child { border-color: #31485a; background: #132738; color: var(--muted); }
 
 /* Every management header advertises sorting, including the inactive ones. */
-.sort-button span::after { content: "↕"; opacity: .72; }
+.sort-button span::after { content: "↕"; color: #000; opacity: .72; }
 .sort-button.is-sorted span::after { content: "↓"; opacity: 1; }
 .sort-button.is-sorted.is-ascending span::after { content: "↑"; }
 

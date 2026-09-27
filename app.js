@@ -1383,6 +1383,7 @@ function managementTableDefinitions(prefix) {
       title: `Table 1 – ${prefix} Receiving Incidents By Article`,
       defaultSort: `${prefix}Value`,
       columns: [
+        { key: "OutletCode", label: "Outlet Code" },
         { key: "OutletName", label: "OutletName" },
         { key: "ArticleNo", label: "Article No" },
         { key: "ArticleName", label: "ArticleName" },
@@ -2352,7 +2353,7 @@ function configureManagementTable(tableNumber) {
   // Force the header, and with it the per-column search inputs, to rebuild.
   state.detailHeaderSignature = "";
   dom.detailTableGrid.classList.toggle("incident-user-table", state.detailTableNumber === 6);
-  dom.detailTableGrid.classList.toggle("outlet-leading-table", [2, 3].includes(state.detailTableNumber));
+  dom.detailTableGrid.classList.toggle("outlet-leading-table", [1, 2, 3].includes(state.detailTableNumber));
   setText("detail-title", table.title);
   setText("detail-context", `${detailScopeLabel()} · ${dateRangeLabel(state.data.range)}`);
   dom.detailSearch.placeholder = state.detailTableNumber === 5
