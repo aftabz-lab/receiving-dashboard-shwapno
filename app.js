@@ -3555,3 +3555,24 @@ export const dashboardReady = loadDashboard({ refreshMetadata: true, snapshotOnl
   if (!navigator.onLine) return;
   return loadDashboard({ refreshMetadata: true });
 });
+
+// SHWAPNO Ask AI: read-only backend data bridge v1.
+if (new URLSearchParams(location.search).get('snapshot-worker') !== '1') window.ShwapnoDashboardData=Object.freeze({version:1,id:'receiving',async read({question='',signal}={}){
+  if(!state.data)throw new Error('Receiving backend data is still loading.');
+  const data=state.data;
+  const names={Sales:'Sold quantity',Receiving:'Received quantity',Inventory:'Inventory quantity',LatestStock:'Latest stock quantity',StockDay:'Stock days',OverValue:'Over receiving value',UnderValue:'Under receiving value',OverIncidents:'Over receiving incidents',UnderIncidents:'Under receiving incidents',OverIncidentPct:'Over receiving incident percent',UnderIncidentPct:'Under receiving incident percent',ActiveOutlets:'Active outlets'};
+  const summary=data.kpis?.[0]||{};
+  const datasets=[{id:'outlets',title:'Outlet receiving source measures',rows:data.enrichedOutlets||data.outlets||[],columns:Object.entries(names).map(([key,label])=>({key,label})),identity:['OutletCode','OutletName','Outlet','RHO','Zonal','Region']},
+    {id:'categories',title:'Category receiving source measures',rows:data.categories||[],identity:['Category']},{id:'regions',title:'Region receiving source measures',rows:data.regions||[],identity:['Region']},{id:'trend',title:'Daily receiving and sales',rows:data.trend||[],latest:{field:'Date',label:'source day'}}];
+  if(/\b(article|articles|po|purchase order|user|movement|transaction|transactions|last|latest)\b/i.test(question)){
+    const table=/\b(user|incidents)\b/i.test(question)?6:/\b(po|purchase order|movement|transaction|transactions|last|latest)\b/i.test(question)?5:1;
+    const filters={...state.filters,region:'all'};
+    if(state.selectedRegions.size)filters.regions=[...state.selectedRegions];
+    if(state.selectedArticleNos.size)filters.articleNos=[...state.selectedArticleNos];
+    const allowed=organizationScopeCodes();if(allowed)filters.outletCodes=allowed;
+    const code=question.match(/\b[A-Za-z]{1,2}\d{2,5}\b/)?.[0];if(code){filters.outletCodes=[normalizeOutletCode(code)];filters.outletCode=normalizeOutletCode(code);}
+    const result=await state.client.loadManagementTable(filters,table,{range:data.range,scope:data.scope,mode:incidentTableType()},{signal,complete:true});
+    datasets.unshift({id:'management',title:managementTableDefinition(table).title+' backend records',rows:normalizeManagementRows(result.rows),columns:managementTableDefinition(table).columns,identity:['OutletCode','OutletName','ArticleNo','ArticleName','RHO','Zonal','UserCode','CreatedBy'],...(table===5?{latest:{field:'ReceivingDate',label:'receiving transaction'}}:{})});
+  }
+  return {id:'receiving',ready:true,source:'Receiving Power BI backend measures',snapshot:data.snapshotGeneratedAt||state.sharedSnapshot?.snapshotGeneratedAt||data.queryTimestamp,scope:'Applied Power BI date window '+data.range.start+' to '+data.range.endExclusive+' (end exclusive); current business filters; complete source result blocks',filters:activeFilterLabels().map(value=>({label:'Filter',value})),facts:Object.entries(names).filter(([key])=>summary[key]!=null).map(([key,label])=>({label,value:summary[key]})),datasets};
+}});
