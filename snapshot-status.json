@@ -1,16 +1,16 @@
 {
-  "lastCheckedAt": "2026-10-12T12:01:49.788Z",
+  "lastCheckedAt": "2026-10-12T12:55:57.157Z",
   "result": "updated",
-  "powerBiRefreshedAt": "2026-10-12T11:37:56.29Z",
+  "powerBiRefreshedAt": "2026-10-12T12:11:58.203Z",
   "reportWindow": "2026-09-20 to 2026-10-11",
-  "snapshotGeneratedAt": "2026-10-12T12:01:49.752Z",
+  "snapshotGeneratedAt": "2026-10-12T12:55:57.120Z",
   "reportLink": "https://app.powerbi.com/view?r=eyJrIjoiMDk4MjIwOTgtZDNmMi00NjJiLWJmOTEtMTcwM2YwZTVlOWNjIiwidCI6IjNjZDA3OTg4LTUyNjMtNDA2NC1hZDU1LWU5NTZhYjNkZDExNyIsImMiOjEwfQ%3D%3D",
-  "lastChangeAt": "2026-10-12T12:01:49.752Z",
+  "lastChangeAt": "2026-10-12T12:55:57.120Z",
   "rows": {
-    "articleOptions": 25576,
+    "articleOptions": 25489,
     "categories": 224,
     "outlets": 1056,
     "trendDays": 22
   },
-  "sourceFingerprint": "5e666733c65e7e5c393c4ef03f43ffe79b26b5adcccf87a51315cab63af15d12"
+  "sourceFingerprint": "a3c624d6ebbd135ee242f36dd92cbe4a807309fef6fbd7ec7e3bb88342bb0628"
 }
