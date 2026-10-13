@@ -1,5 +1,5 @@
 import { PowerBIDataClient, POWER_BI_URL } from "./powerbi.js?v=20260927-1";
-import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=20260909-4";
+import { loadOrganizationSnapshot, normalizeOutletCode } from "./organization.js?v=receiving-hierarchy-v6-20261013";
 import { downloadWorkbook } from "./xlsx-lite.js?v=20260910-7";
 
 const SNAPSHOT_CHECK_MS = 60 * 1000;
@@ -37,6 +37,7 @@ const state = {
   client: new PowerBIDataClient(),
   organization: null,
   organizationPromise: null,
+  organizationRefresh: null,
   sharedSnapshot: null,
   data: null,
   filters: { ...DEFAULT_FILTERS },
@@ -1024,14 +1025,24 @@ function clearError() {
   dom.errorPanel.hidden = true;
 }
 
-async function refreshOrganization() {
-  try {
+async function refreshOrganization({ refreshView = false } = {}) {
+  if (state.organizationRefresh) return state.organizationRefresh;
+  const request = (async () => { try {
     const organization = await loadOrganizationSnapshot();
+    const changed = state.organization?.revision !== organization.revision;
     state.organization = organization;
     dom.organizationStatus.classList.remove("is-warning");
     dom.organizationStatus.textContent = `${organization.rows.length.toLocaleString()} outlet hierarchy mappings loaded`;
     dom.organizationStatus.title = `Separate mapping file updated ${dhakaDateTime(organization.updatedAt)}`;
-    if (state.data) renderAll(state.data);
+    if (changed) {
+      state.detailRows = normalizeManagementRows(state.detailRows);
+      state.detailCache.forEach(cached => { cached.rows = normalizeManagementRows(cached.rows); });
+      state.detailHeaderSignature = "";
+      if (state.data) renderAll(state.data);
+      if (dom.detailDialog.open) renderDetail();
+      const hierarchyFilterActive = state.selectedRegions.size > 0 || state.filters.rho !== "all" || state.filters.zonal !== "all";
+      if (refreshView && hierarchyFilterActive && state.data && !state.loadController) await loadDashboard();
+    }
     return organization;
   } catch (error) {
     console.warn("Organization mapping unavailable", error);
@@ -1041,7 +1052,9 @@ async function refreshOrganization() {
       dom.organizationStatus.removeAttribute("title");
     }
     return state.organization;
-  }
+  } })();
+  state.organizationRefresh = request;
+  try { return await request; } finally { if (state.organizationRefresh === request) state.organizationRefresh = null; }
 }
 
 function isUnderMode() {
@@ -3540,11 +3553,13 @@ window.addEventListener("online", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
+  refreshOrganization({ refreshView: true });
   if (filtersAreDefault() && (!state.nextLiveCheckAt || Date.now() >= state.nextLiveCheckAt)) loadDashboard({ refreshMetadata: true });
   else if (state.nextRefreshAt && Date.now() >= state.nextRefreshAt) pollSharedSnapshot({ force: true });
 });
 window.setInterval(() => {
   if (document.hidden || !navigator.onLine) return;
+  refreshOrganization({ refreshView: true });
   if (filtersAreDefault() && (!state.nextLiveCheckAt || Date.now() >= state.nextLiveCheckAt)) loadDashboard({ refreshMetadata: true });
   else pollSharedSnapshot();
 }, 60_000);
@@ -3576,3 +3591,4 @@ if (new URLSearchParams(location.search).get('snapshot-worker') !== '1') window.
   }
   return {id:'receiving',ready:true,source:'Receiving Power BI backend measures',snapshot:data.snapshotGeneratedAt||state.sharedSnapshot?.snapshotGeneratedAt||data.queryTimestamp,scope:'Applied Power BI date window '+data.range.start+' to '+data.range.endExclusive+' (end exclusive); current business filters; complete source result blocks',filters:activeFilterLabels().map(value=>({label:'Filter',value})),facts:Object.entries(names).filter(([key])=>summary[key]!=null).map(([key,label])=>({label,value:summary[key]})),datasets};
 }});
+
